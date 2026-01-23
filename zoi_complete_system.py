@@ -645,8 +645,8 @@ def calculate_risk(
         raise HTTPException(status_code=404, detail="Product not found")
     
     # Importar motor de risco (assumindo que está no mesmo arquivo)
-    class RiskCalculator:
-def calculate(self, product, rasff_alerts):
+class RiskCalculator:
+ def calculate(self, product, rasff_alerts):
         score = 100.0
         rasff_penalty = min(rasff_alerts * 5, 30)
         score -= rasff_penalty
@@ -736,19 +736,18 @@ assessment = RiskAssessment(
         recommendations=result['recommendations']
     )
     
-    db.add(assessment)
-    db.commit()
+db.add(assessment)
+db.commit()
     
     # Enviar notificações em background se score > threshold
-    if result['score'] > 65:
+if result['score'] > 65:
         background_tasks.add_task(
             send_risk_notifications,
             product_key=request.product_key,
             score=result['score'],
             status=result['status']
         )
-    
-    return result
+        result
 
 
 @app.post("/api/users", status_code=status.HTTP_201_CREATED)
