@@ -429,7 +429,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
 
 # API Endpoints
 @app.get("/")
-def root():
+def root():  
     return {
         "message": "ZOI Trade Advisory API v2.0",
         "status": "operational",
@@ -443,8 +443,8 @@ def root():
 # ROTA DE SEED - POPULAR BANCO DE DADOS
 # ============================================================================
 @app.get("/api/admin/seed-database")
-def seed_database(db: Session = Depends(get_db)):
-    """Rota rápida para popular o banco com os 20 principais produtos"""
+def seed_database(db: SessionLocal = Depends(get_db)):
+    from sqlalchemy.orm import Session
     from datetime import datetime
     
     # Lista de produtos estratégicos (Exportação BR -> IT)
