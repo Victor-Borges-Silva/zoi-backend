@@ -444,12 +444,16 @@ def root():
 # ============================================================================
 @app.get("/api/admin/seed-database")
 def seed_database(db: SessionLocal = Depends(get_db)):
+    from sqlalchemy import text
     from sqlalchemy.orm import Session
-    from datetime import datetime
+    
+    db.execute(text("DROP TABLE IF EXISTS risks CASCADE"))
+    db.execute(text("DROP TABLE IF EXISTS products CASCADE"))
+    db.commit()
     
     Base.metadata.create_all(bind=engine)
     
-    initial_products = [
+    products_list = [
         {"key": "soja_grao", "name": "Soja em Grãos", "ncm": "12019000", "dir": "export", "state": "ambient"},
         {"key": "cafe_cru", "name": "Café Cru em Grão", "ncm": "09011110", "dir": "export", "state": "ambient"},
         {"key": "carne_bovina", "name": "Carne Bovina Congelada", "ncm": "02023000", "dir": "export", "state": "frozen"},
@@ -457,35 +461,27 @@ def seed_database(db: SessionLocal = Depends(get_db)):
         {"key": "acai_polpa", "name": "Polpa de Açaí", "ncm": "08119050", "dir": "export", "state": "frozen"},
         {"key": "mel_natural", "name": "Mel Natural", "ncm": "04090000", "dir": "export", "state": "ambient"},
         {"key": "azeite_oliva", "name": "Azeite de Oliva Extra Virgem", "ncm": "15092000", "dir": "import", "state": "ambient"},
-        {"key": "vinho_tinto", "name": "Vinho Tinto de Mesa", "ncm": "22042100", "dir": "import", "state": "ambient"},
-        {"key": "limao_siciliano", "name": "Limão Siciliano Fresco", "ncm": "08055000", "dir": "import", "state": "ambient"},
-        {"key": "queijo_parmesao", "name": "Queijo Parmigiano Reggiano", "ncm": "04069011", "dir": "import", "state": "chilled"}
+        {"key": "vinho_tinto", "name": "Vinho Tinto de Mesa", "ncm": "22042100", "dir": "import", "state": "ambient"}
     ]
     
-    added_count = 0
-    for p_data in initial_products:
-        exists = db.query(Product).filter(Product.key == p_data["key"]).first()
-        if not exists:
-            new_p = Product(
-                key=p_data["key"],
-                name_pt=p_data["name"],
-                name_it=p_data["name"],
-                ncm_code=p_data["ncm"],
-                hs_code=p_data["ncm"][:6],
-                direction=TradeDirectionDB(p_data["dir"]),
-                state=ProductStateDB(p_data["state"]),
-                requires_phytosanitary_cert=True,
-                critical_substances=["Glifosato"] if p_data["dir"] == "export" else []
-            )
-            db.add(new_p)
-            added_count += 1
+    counter = 0
+    for item in products_list:
+        new_p = Product(
+            key=item["key"],
+            name_pt=item["name"],
+            name_it=item["name"],
+            ncm_code=item["ncm"],
+            hs_code=item["ncm"][:6],
+            direction=TradeDirectionDB(item["dir"]),
+            state=ProductStateDB(item["state"]),
+            requires_phytosanitary_cert=True,
+            critical_substances=["Glifosato"] if item["dir"] == "export" else []
+        )
+        db.add(new_p)
+        counter += 1
     
     db.commit()
-    return {
-        "status": "success",
-        "message": f"Tabelas verificadas e {added_count} produtos processados.",
-        "total": db.query(Product).count()
-    }
+    return {"status": "success", "message": "Banco resetado e populado", "total": counter}
 
 @app.get("/api/products", response_model=List[ProductResponse])
 def get_products(
