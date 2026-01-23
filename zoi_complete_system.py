@@ -482,11 +482,11 @@ def create_product(product_data: dict):
     from sqlalchemy.orm import Session
     with Session(engine) as session:
         try:
-            # O Lovable enviará os dados via formulário
+            
             new_p = Product(
                 key=product_data["key"],
                 name_pt=product_data["name_pt"],
-                name_it=product_data["name_pt"], # Por enquanto repetimos o PT no IT
+                name_it=product_data["name_pt"], 
                 ncm_code=product_data["ncm_code"],
                 hs_code=product_data["ncm_code"][:6],
                 direction=TradeDirectionDB(product_data["direction"]),
@@ -555,49 +555,6 @@ def get_product(product_key: str, db: SessionLocal = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Product not found")
     
     return product
-
-@app.post("/api/admin/products")
-def create_product(product_data: dict, background_tasks: BackgroundTasks):
-    from sqlalchemy.orm import Session
-    with Session(engine) as session:
-        try:
-            new_p = Product(
-                key=product_data["key"],
-                name_pt=product_data["name_pt"],
-                name_it=product_data["name_pt"],
-                ncm_code=product_data["ncm_code"],
-                hs_code=product_data["ncm_code"][:6],
-                direction=TradeDirectionDB(product_data["direction"]),
-                state=ProductStateDB(product_data["state"]),
-                requires_phytosanitary_cert=True
-            )
-            session.add(new_p)
-            session.commit()
-            session.refresh(new_p)
-            background_tasks.add_task(run_initial_scraping, new_p.name_pt, new_p.key)
-            return {"status": "success", "message": "Produto criado e auditoria iniciada"}
-        except Exception as e:
-            session.rollback()
-            return {"status": "error", "message": str(e)}
-
-def run_initial_scraping(product_name: str, product_key: str):
-    try:
-        scraper = ANVISAScraper()
-        results = scraper.get_lmr_for_substance("Glifosato", product_name)
-        from sqlalchemy.orm import Session
-        with Session(engine) as session:
-            product = session.query(Product).filter(Product.key == product_key).first()
-            if product:
-                new_lmr = LMRData(
-                    product_id=product.id,
-                    substance=results['substance'] if results else "Auditoria Geral",
-                    dest_lmr=results['lmr_mg_kg'] if results else 0.0,
-                    source_authority="ANVISA/ZOI Sentinel"
-                )
-                session.add(new_lmr)
-                session.commit()
-    except Exception as e:
-        print(f"Erro na auditoria: {e}")
 
 class RiskCalculator:
     def calculate(self, product, rasff_alerts):
