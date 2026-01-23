@@ -447,7 +447,8 @@ def seed_database(db: SessionLocal = Depends(get_db)):
     from sqlalchemy.orm import Session
     from datetime import datetime
     
-    # Lista de produtos estratégicos (Exportação BR -> IT)
+    Base.metadata.create_all(bind=engine)
+    
     initial_products = [
         {"key": "soja_grao", "name": "Soja em Grãos", "ncm": "12019000", "dir": "export", "state": "ambient"},
         {"key": "cafe_cru", "name": "Café Cru em Grão", "ncm": "09011110", "dir": "export", "state": "ambient"},
@@ -463,13 +464,12 @@ def seed_database(db: SessionLocal = Depends(get_db)):
     
     added_count = 0
     for p_data in initial_products:
-        # Verifica se já existe pelo campo 'key'
         exists = db.query(Product).filter(Product.key == p_data["key"]).first()
         if not exists:
             new_p = Product(
                 key=p_data["key"],
                 name_pt=p_data["name"],
-                name_it=p_data["name"], # No futuro Lovable traduz
+                name_it=p_data["name"],
                 ncm_code=p_data["ncm"],
                 hs_code=p_data["ncm"][:6],
                 direction=TradeDirectionDB(p_data["dir"]),
@@ -483,8 +483,8 @@ def seed_database(db: SessionLocal = Depends(get_db)):
     db.commit()
     return {
         "status": "success",
-        "message": f"Foram adicionados {added_count} produtos reais ao seu banco de dados.",
-        "total_atualmente": db.query(Product).count()
+        "message": f"Tabelas verificadas e {added_count} produtos processados.",
+        "total": db.query(Product).count()
     }
 
 @app.get("/api/products", response_model=List[ProductResponse])
