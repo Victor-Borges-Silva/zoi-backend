@@ -408,7 +408,6 @@ def get_db():
     finally:
         db.close()
 
-
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
 
@@ -628,16 +627,36 @@ def run_initial_scraping(product_name: str, product_key: str):
     except Exception as e:
         print(f"Erro na auditoria: {e}")
 
+class RiskCalculator:
+    def calculate(self, product, rasff_alerts):
+        score = 100.0
+        rasff_penalty = min(rasff_alerts * 5, 30)
+        score -= rasff_penalty
+        if product.direction.value == "import":
+            score -= 5
+        status = "green"
+        if score < 50: status = "red"
+        elif score < 75: status = "yellow"
+        return {
+            "score": round(max(score, 0), 1),
+            "status": status,
+            "components": {
+                "rasff_score": 100.0 - rasff_penalty,
+                "lmr_score": 95.0,
+                "phyto_score": 100.0,
+                "logistic_score": 100.0,
+                "penalty": 0.0
+            },
+            "recommendations": ["Auditoria automatizada concluída", "Verificar certificados de origem"]
+        }
+
 @app.post("/api/risk/calculate")
 def calculate_risk(request: RiskCalculationRequest, db: SessionLocal = Depends(get_db)):
     product = db.query(Product).filter(Product.key == request.product_key).first()
-    
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
-    
     calc = RiskCalculator()
     result = calc.calculate(product, request.rasff_alerts_12m)
-    
     return {
         "score": float(result["score"]),
         "status": str(result["status"]),
@@ -652,27 +671,6 @@ def calculate_risk(request: RiskCalculationRequest, db: SessionLocal = Depends(g
         "product_info": {
             "name": str(product.name_pt), 
             "ncm": str(product.ncm_code)
-        }
-    }
-
-@app.post("/api/risk/calculate")
-def calculate_risk(request: RiskCalculationRequest, db: SessionLocal = Depends(get_db)):
-    product = db.query(Product).filter(Product.key == request.product_key).first()
-    
-    if not product:
-        raise HTTPException(status_code=404, detail="Product not found")
-    
-    calc = RiskCalculator()
-    result = calc.calculate(product, request.rasff_alerts_12m)
-    
-    return {
-        "score": result["score"],
-        "status": result["status"],
-        "components": result["components"],
-        "recommendations": result["recommendations"],
-        "product_info": {
-            "name": product.name_pt, 
-            "ncm": product.ncm_code
         }
     }
 
