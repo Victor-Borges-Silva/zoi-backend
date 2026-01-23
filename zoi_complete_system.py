@@ -1344,34 +1344,36 @@ def export_data(output):
 
 
 # ============================================================================
-# 10. MAIN APPLICATION RUNNER
+# 10. MAIN APPLICATION RUNNER (CORRIGIDO PARA RENDER)
 # ============================================================================
 
 def run_api_server():
-    """Inicia servidor FastAPI"""
+    """Inicia servidor FastAPI com Porta Dinâmica"""
     import uvicorn
+    import os
     
-    # Inicializar scheduler
-    scheduler = ScheduledTasks()
-    scheduler.start()
+    # Inicializar scheduler (Opcional: você pode comentar se não tiver Redis configurado)
+    try:
+        scheduler = ScheduledTasks()
+        scheduler.start()
+    except Exception as e:
+        print(f"Aviso: Scheduler não iniciado (Redis pode estar offline): {e}")
     
-    # Iniciar API
+    # PEGA A PORTA QUE O RENDER MANDA (ESSENCIAL)
+    port = int(os.environ.get("PORT", 8000))
+    
+    print(f"🚀 ZOI API ONLINE NA PORTA: {port}")
+    
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=8000,
+        port=port,
         log_level="info"
     )
-
-
-if __name__ == "__main__":
+    if __name__ == "__main__":
     import sys
+
+    init_database()
+
+    print("Run with: uvicorn zoi_complet_sistem:app")
     
-  init_database() 
-    
-    if len(sys.argv) > 1 and sys.argv[1] == 'serve':
-        print("="*60)
-        print("ZOI TRADE ADVISORY - API SERVER")
-        print("="*60)
-        run_api_server()
-    else:
