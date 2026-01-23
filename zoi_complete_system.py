@@ -443,52 +443,55 @@ def root():
 # ROTA DE SEED - POPULAR BANCO DE DADOS
 # ============================================================================
 @app.get("/api/admin/seed-database")
-def seed_database(db: SessionLocal = Depends(get_db)):
-    from sqlalchemy import text
+def seed_database():
     from sqlalchemy.orm import Session
+    from sqlalchemy import text
     
-    db.execute(text("DROP TABLE IF EXISTS risks CASCADE"))
-    db.execute(text("DROP TABLE IF EXISTS products CASCADE"))
-    db.commit()
+    with Session(engine) as session:
+        session.execute(text("DROP TABLE IF EXISTS risks CASCADE"))
+        session.execute(text("DROP TABLE IF EXISTS products CASCADE"))
+        session.commit()
+        
+        Base.metadata.create_all(bind=engine)
+        
+        products_list = [
+            {"key": "soja_grao", "name": "Soja em Grãos", "ncm": "12019000", "dir": "export", "state": "ambient"},
+            {"key": "cafe_cru", "name": "Café Cru em Grão", "ncm": "09011110", "dir": "export", "state": "ambient"},
+            {"key": "carne_bovina", "name": "Carne Bovina Congelada", "ncm": "02023000", "dir": "export", "state": "frozen"},
+            {"key": "suco_laranja", "name": "Suco de Laranja (FCOJ)", "ncm": "20091100", "dir": "export", "state": "frozen"},
+            {"key": "acai_polpa", "name": "Polpa de Açaí", "ncm": "08119050", "dir": "export", "state": "frozen"},
+            {"key": "mel_natural", "name": "Mel Natural", "ncm": "04090000", "dir": "export", "state": "ambient"},
+            {"key": "azeite_oliva", "name": "Azeite de Oliva Extra Virgem", "ncm": "15092000", "dir": "import", "state": "ambient"},
+            {"key": "vinho_tinto", "name": "Vinho Tinto de Mesa", "ncm": "22042100", "dir": "import", "state": "ambient"},
+            {"key": "limao_siciliano", "name": "Limão Siciliano Fresco", "ncm": "08055000", "dir": "import", "state": "ambient"},
+            {"key": "queijo_parmesao", "name": "Queijo Parmigiano Reggiano", "ncm": "04069011", "dir": "import", "state": "chilled"}
+        ]
+        
+        for item in products_list:
+            new_p = Product(
+                key=item["key"],
+                name_pt=item["name"],
+                name_it=item["name"],
+                ncm_code=item["ncm"],
+                hs_code=item["ncm"][:6],
+                direction=TradeDirectionDB(item["dir"]),
+                state=ProductStateDB(item["state"]),
+                requires_phytosanitary_cert=True
+            )
+            session.add(new_p)
+        
+        session.commit()
+        total = session.query(Product).count()
+        
+    return {"status": "success", "total": total}
+ 
+@app.get("/api/products")
+def get_products():
+    from sqlalchemy.orm import Session
+    with Session(engine) as session:
+        products = session.query(Product).all()
+        return products
     
-    Base.metadata.create_all(bind=engine)
-    
-    products_list = [
-        {"key": "soja_grao", "name": "Soja em Grãos", "ncm": "12019000", "dir": "export", "state": "ambient"},
-        {"key": "cafe_cru", "name": "Café Cru em Grão", "ncm": "09011110", "dir": "export", "state": "ambient"},
-        {"key": "carne_bovina", "name": "Carne Bovina Congelada", "ncm": "02023000", "dir": "export", "state": "frozen"},
-        {"key": "suco_laranja", "name": "Suco de Laranja (FCOJ)", "ncm": "20091100", "dir": "export", "state": "frozen"},
-        {"key": "acai_polpa", "name": "Polpa de Açaí", "ncm": "08119050", "dir": "export", "state": "frozen"},
-        {"key": "mel_natural", "name": "Mel Natural", "ncm": "04090000", "dir": "export", "state": "ambient"},
-        {"key": "azeite_oliva", "name": "Azeite de Oliva Extra Virgem", "ncm": "15092000", "dir": "import", "state": "ambient"},
-        {"key": "vinho_tinto", "name": "Vinho Tinto de Mesa", "ncm": "22042100", "dir": "import", "state": "ambient"}
-    ]
-    
-    counter = 0
-    for item in products_list:
-        new_p = Product(
-            key=item["key"],
-            name_pt=item["name"],
-            name_it=item["name"],
-            ncm_code=item["ncm"],
-            hs_code=item["ncm"][:6],
-            direction=TradeDirectionDB(item["dir"]),
-            state=ProductStateDB(item["state"]),
-            requires_phytosanitary_cert=True,
-            critical_substances=["Glifosato"] if item["dir"] == "export" else []
-        )
-        db.add(new_p)
-        counter += 1
-    
-    db.commit()
-    return {"status": "success", "message": "Banco resetado e populado", "total": counter}
-
-@app.get("/api/products", response_model=List[ProductResponse])
-def get_products(
-    direction: Optional[str] = None,
-    state: Optional[str] = None,
-    db: SessionLocal = Depends(get_db)
-):
     """Lista produtos com filtros opcionais"""
     
     query = db.query(Product)
