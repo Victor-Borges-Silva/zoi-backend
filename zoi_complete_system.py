@@ -427,8 +427,21 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     return encoded_jwt
 
 
-
- # API Endpoints
+# API Endpoints
+@app.get("/")
+def root():
+    return {
+        "message": "ZOI Trade Advisory API v2.0",
+        "status": "operational",
+        "endpoints": {
+            "products": "/api/products",
+            "risk_calculation": "/api/calculate-risk",
+            "admin": "/api/admin"
+        }
+    }
+# ============================================================================
+# ROTA DE SEED - POPULAR BANCO DE DADOS
+# ============================================================================
 @app.get("/api/admin/seed-database")
 def seed_database(db: Session = Depends(get_db)):
     """Rota rápida para popular o banco com os 20 principais produtos"""
@@ -443,31 +456,76 @@ def seed_database(db: Session = Depends(get_db)):
         {"key": "acai_polpa", "name": "Polpa de Açaí", "ncm": "08119050", "dir": "export", "state": "frozen"},
         {"key": "mel_natural", "name": "Mel Natural", "ncm": "04090000", "dir": "export", "state": "ambient"},
         {"key": "azeite_oliva", "name": "Azeite de Oliva Extra Virgem", "ncm": "15092000", "dir": "import", "state": "ambient"},
-        {"key": "vinho_tinto", "name": "Vinho Tinto de Mesa", "ncm": "22042100", "dir": "import", "state": "ambient"}
+        {"key": "vinho_tinto", "name": "Vinho Tinto de Mesa", "ncm": "22042100", "dir": "import", "state": "ambient"},
+        {"key": "limao_siciliano", "name": "Limão Siciliano Fresco", "ncm": "08055000", "dir": "import", "state": "ambient"},
+        {"key": "queijo_parmesao", "name": "Queijo Parmigiano Reggiano", "ncm": "04069011", "dir": "import", "state": "chilled"}
     ]
     
     added_count = 0
     for p_data in initial_products:
-        # Verifica se já existe para não duplicar
+        # Verifica se já existe pelo campo 'key'
         exists = db.query(Product).filter(Product.key == p_data["key"]).first()
         if not exists:
             new_p = Product(
                 key=p_data["key"],
                 name_pt=p_data["name"],
-                name_it=p_data["name"], # Simplificado para o seed
+                name_it=p_data["name"], # No futuro Lovable traduz
                 ncm_code=p_data["ncm"],
                 hs_code=p_data["ncm"][:6],
                 direction=TradeDirectionDB(p_data["dir"]),
                 state=ProductStateDB(p_data["state"]),
                 requires_phytosanitary_cert=True,
-                critical_substances=["Glifosato", "Cobre"] if p_data["dir"] == "export" else []
+                critical_substances=["Glifosato"] if p_data["dir"] == "export" else []
             )
             db.add(new_p)
             added_count += 1
     
     db.commit()
-    return {"message": f"Sucesso! {added_count} produtos adicionados ao banco real."}
+    return {
+        "status": "success",
+        "message": f"Foram adicionados {added_count} produtos reais ao seu banco de dados.",
+        "total_atualmente": db.query(Product).count()
+    }
 
+@app.get("/api/products", response_model=List[ProductResponse])
+def get_products(
+    direction: Optional[str] = None,
+    state: Optional[str] = None,
+    db: SessionLocal = Depends(get_db)
+):
+    """Lista produtos com filtros opcionais"""
+    
+    query = db.query(Product)
+    
+    if direction:
+        query = query.filter(Product.direction == direction)
+    
+    if state:
+        query = query.filter(Product.state == state)
+    
+    products = query.all()
+    
+    return products
+
+
+@app.get("/api/products/{product_key}", response_model=ProductResponse)
+def get_product(product_key: str, db: SessionLocal = Depends(get_db)):
+    """Retorna detalhes de um produto específico"""
+    
+    product = db.query(Product).filter(Product.key == product_key).first()
+    
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    return product
+
+
+@app.post("/api/calculate-risk", response_model=RiskCalculationResponse)
+def calculate_risk(
+    request: RiskCalculationRequest,
+    background_tasks: BackgroundTasks,
+    db: SessionLocal = Depends(get_db)
+):
     """
     Calcula Risk Score para um produto
     """
