@@ -459,26 +459,44 @@ def seed_database():
         
     return {"status": "success", "total": total}
  
-@app.get("/api/products")
-def get_products():
-    from sqlalchemy.orm import Session
-    with Session(engine) as session:
-        products = session.query(Product).all()
-        return products
-    
-    """Lista produtos com filtros opcionais"""
-    
-    query = db.query(Product)
-    
-    if direction:
-        query = query.filter(Product.direction == direction)
-    
-    if state:
-        query = query.filter(Product.state == state)
-    
-    products = query.all()
-    
-    return products
+@app.get("/api/admin/seed-database")
+def seed_database(db: SessionLocal = Depends(get_db)):
+    try:
+        # 1. Limpa dados existentes para evitar conflitos
+        db.query(RiskAssessment).delete()
+        db.query(LMRData).delete()
+        db.query(Product).delete()
+        db.commit()
+
+        # 2. Lista completa de produtos CEO
+        products_to_seed = [
+            {"key": "soy_bean_br", "name": "Soja", "ncm": "12019000"},
+            {"key": "corn_br", "name": "Milho", "ncm": "10059010"},
+            {"key": "coffee_br", "name": "Café", "ncm": "09011110"},
+            {"key": "apple_fuji_br", "name": "Maçã Fuji", "ncm": "08081000"},
+            {"key": "lemon_tahiti_br", "name": "Limão Tahiti", "ncm": "08055000"},
+            {"key": "orange_br", "name": "Laranja", "ncm": "08051000"},
+            {"key": "beef_br", "name": "Carne Bovina", "ncm": "02013000"},
+            {"key": "chicken_br", "name": "Frango", "ncm": "02071100"}
+        ]
+
+        for p in products_to_seed:
+            new_p = Product(
+                key=p["key"],
+                name_pt=p["name"],
+                name_it=p["name"],
+                ncm_code=p["ncm"],
+                hs_code=p["ncm"][:6],
+                direction=TradeDirectionDB.EXPORT,
+                state=ProductStateDB.ACTIVE
+            )
+            db.add(new_p)
+        
+        db.commit()
+        return {"status": "success", "message": f"{len(products_to_seed)} produtos inseridos"}
+    except Exception as e:
+        db.rollback()
+        return {"status": "error", "message": str(e)}
 
 # ============================================================================
 # ROTAS DE ADMINISTRAÇÃO (POST E DELETE)
