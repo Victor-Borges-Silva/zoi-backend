@@ -12,3 +12,6 @@ python-jose[cryptography]
 passlib
 bcrypt
 apscheduler
+celery
+redis
+python-dotenv
