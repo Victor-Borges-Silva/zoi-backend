@@ -1462,7 +1462,11 @@ if __name__ == "__main__":
     import uvicorn
     import os
     
-    Base.metadata.create_all(bind=engine)
-    
+    try:
+        Base.metadata.create_all(bind=engine)
+    except Exception as e:
+        pass
+
     port = int(os.environ.get("PORT", 8000))
+    
     uvicorn.run(app, host="0.0.0.0", port=port)
