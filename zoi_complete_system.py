@@ -169,10 +169,10 @@ class TradeDirectionDB(enum.Enum):
     IMPORT = "import"
 
 
-class ProductStateDB(enum.Enum):
-    FRESH = "fresh"
-    FROZEN = "frozen"
-    AMBIENT = "ambient"
+class ProductStateDB(str, enum.Enum):
+    ambient = "ambient"
+    frozen = "frozen"
+    chilled = "chilled"
 
 
 class RiskStatusDB(enum.Enum):
@@ -445,26 +445,21 @@ def root():
 @app.get("/api/admin/seed-database")
 def seed_database():
     from sqlalchemy.orm import Session
-    from sqlalchemy import text
+    
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
     
     with Session(engine) as session:
-        session.execute(text("DROP TABLE IF EXISTS risks CASCADE"))
-        session.execute(text("DROP TABLE IF EXISTS products CASCADE"))
-        session.commit()
-        
-        Base.metadata.create_all(bind=engine)
-        
         products_list = [
             {"key": "soja_grao", "name": "Soja em Grãos", "ncm": "12019000", "dir": "export", "state": "ambient"},
             {"key": "cafe_cru", "name": "Café Cru em Grão", "ncm": "09011110", "dir": "export", "state": "ambient"},
-            {"key": "carne_bovina", "name": "Carne Bovina Congelada", "ncm": "02023000", "dir": "export", "state": "frozen"},
-            {"key": "suco_laranja", "name": "Suco de Laranja (FCOJ)", "ncm": "20091100", "dir": "export", "state": "frozen"},
+            {"key": "carne_bovina", "name": "Carne Bovina", "ncm": "02023000", "dir": "export", "state": "frozen"},
+            {"key": "suco_laranja", "name": "Suco de Laranja", "ncm": "20091100", "dir": "export", "state": "frozen"},
             {"key": "acai_polpa", "name": "Polpa de Açaí", "ncm": "08119050", "dir": "export", "state": "frozen"},
             {"key": "mel_natural", "name": "Mel Natural", "ncm": "04090000", "dir": "export", "state": "ambient"},
-            {"key": "azeite_oliva", "name": "Azeite de Oliva Extra Virgem", "ncm": "15092000", "dir": "import", "state": "ambient"},
-            {"key": "vinho_tinto", "name": "Vinho Tinto de Mesa", "ncm": "22042100", "dir": "import", "state": "ambient"},
-            {"key": "limao_siciliano", "name": "Limão Siciliano Fresco", "ncm": "08055000", "dir": "import", "state": "ambient"},
-            {"key": "queijo_parmesao", "name": "Queijo Parmigiano Reggiano", "ncm": "04069011", "dir": "import", "state": "chilled"}
+            {"key": "azeite_oliva", "name": "Azeite de Oliva", "ncm": "15092000", "dir": "import", "state": "ambient"},
+            {"key": "vinho_tinto", "name": "Vinho Tinto", "ncm": "22042100", "dir": "import", "state": "ambient"},
+            {"key": "limao_siciliano", "name": "Limão Siciliano", "ncm": "08055000", "dir": "import", "state": "ambient"}
         ]
         
         for item in products_list:
