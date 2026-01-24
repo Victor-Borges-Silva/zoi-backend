@@ -357,7 +357,6 @@ class ANVISAScraper:
             'url': self.MONOGRAFIA_URL
         }
 
-
 class ProductResponse(BaseModel):
     id: int
     key: str
@@ -400,6 +399,76 @@ class Token(BaseModel):
     access_token: str
     token_type: str
 
+class EnhancedRiskCalculator:
+    """
+    Motor de cálculo de risco ZOI.
+    Avalia parâmetros Sanitários, Fitossanitários, Logísticos e Documentais.
+    """
+    def calculate(self, product, rasff_6m: int, rasff_12m: int) -> dict:
+        # Recupera perfil base do NCM ou usa valores padrão
+        profile = NCM_RISK_PROFILES.get(product.ncm_code, {
+            "sanitario_base": 85.0,
+            "fitossanitario_base": 80.0,
+            "logistico_base": 85.0,
+            "documental_base": 80.0,
+            "historical_rejections": 0
+        })
+
+        # 1. Cálculo de Componentes
+        # Penalidade RASFF: -10 pontos por alerta recente (6m), -4 por alerta antigo (12m)
+        sanitario = max(0, profile['sanitario_base'] - (rasff_6m * 10) - (rasff_12m * 4))
+        
+        # Fitossanitário: Baseado no estado do produto (congelados têm menos risco que frescos)
+        fitossanitario = profile['fitossanitario_base']
+        if product.state.value == 'frozen':
+            fitossanitario = min(100, fitossanitario + 10)
+            
+        logistico = profile['logistico_base']
+        documental = profile['documental_base']
+
+        # 2. Score Final (Média Ponderada)
+        score = (sanitario * 0.4) + (fitossanitario * 0.3) + (logistico * 0.15) + (documental * 0.15)
+        
+        # 3. Definição de Status
+        if score >= 80:
+            status = "green"
+            label = "Baixo Risco"
+        elif score >= 60:
+            status = "yellow"
+            label = "Risco Moderado"
+        else:
+            status = "red"
+            label = "Alto Risco"
+
+        # 4. Recomendações Automáticas
+        recommendations = []
+        if sanitario < 70:
+            recommendations.append("Reforçar análises laboratoriais de contaminantes químicos.")
+        if fitossanitario < 75:
+            recommendations.append("Verificar conformidade com a Instrução Normativa de pragas quarentenárias.")
+        if status == "red":
+            recommendations.append("Alerta: Recomenda-se auditoria prévia no fornecedor antes do embarque.")
+        
+        if not recommendations:
+            recommendations.append("Manter protocolos atuais de compliance.")
+
+        return {
+            "score": round(score, 1),
+            "status": status,
+            "status_label": label,
+            "components": {
+                "Sanitário": round(sanitario, 1),
+                "Fitossanitário": round(fitossanitario, 1),
+                "Logístico": round(logistico, 1),
+                "Documental": round(documental, 1)
+            },
+            "recommendations": recommendations,
+            "alerts": {
+                "rasff_6m": rasff_6m,
+                "rasff_12m": rasff_12m,
+                "historical_rejections": profile.get('historical_rejections', 0)
+            }
+        }
 
 app = FastAPI(
     title="ZOI Trade Advisory API",
