@@ -646,125 +646,246 @@ def delete_product(product_key: str):
         return {"status": "error", "message": "Produto não encontrado"}
 
 
-class EnhancedRiskCalculator:
+@app.get("/api/products/{product_key}/export-pdf")
+def export_risk_pdf(product_key: str, db: SessionLocal = Depends(get_db)):
     """
-    Calculadora de risco melhorada com análise baseada em NCM
-    e componentes mapeados para visualização no frontend
+    Endpoint Premium: Exporta relatório executivo de risco em PDF
     """
+    print(f"📄 Gerando PDF para produto: {product_key}")
     
-    def calculate(self, product, rasff_alerts_6m=0, rasff_alerts_12m=0):
-        ncm = product.ncm_code
-        profile = NCM_RISK_PROFILES.get(ncm, None)
+    product = db.query(Product).filter(Product.key == product_key).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Produto não encontrado")
+    
+    latest_assessment = db.query(RiskAssessment)\
+        .filter(RiskAssessment.product_id == product.id)\
+        .order_by(RiskAssessment.calculation_timestamp.desc())\
+        .first()
+    
+    if not latest_assessment:
+        calc = EnhancedRiskCalculator()
+        result = calc.calculate(product, 0, 0)
         
-        if profile:
-            print(f"📊 Usando perfil de risco NCM para {profile['name']}")
-            sanitario = profile['sanitario_base']
-            fitossanitario = profile['fitossanitario_base']
-            logistico = profile['logistico_base']
-            documental = profile['documental_base']
-            
-            rasff_penalty = min(rasff_alerts_12m * 3, 15)
-            sanitario -= rasff_penalty
-            fitossanitario -= rasff_penalty * 0.5
-            
-            if profile['eu_barriers'] == 'high':
-                fitossanitario -= 10
-                documental -= 8
-            elif profile['eu_barriers'] == 'medium':
-                fitossanitario -= 5
-                documental -= 4
-            
-            if product.direction.value == "import":
-                documental += 5
-            else:
-                documental -= 3
-                
-        else:
-            print(f"⚠️  Perfil NCM não encontrado, usando cálculo genérico")
-            sanitario = 85.0
-            fitossanitario = 80.0
-            logistico = 88.0
-            documental = 82.0
-            
-            rasff_penalty = min(rasff_alerts_12m * 5, 25)
-            sanitario -= rasff_penalty
-            fitossanitario -= rasff_penalty * 0.7
-        
-        sanitario = max(0, min(100, sanitario))
-        fitossanitario = max(0, min(100, fitossanitario))
-        logistico = max(0, min(100, logistico))
-        documental = max(0, min(100, documental))
-        
-        final_score = (sanitario * 0.35 + fitossanitario * 0.30 + 
-                      logistico * 0.20 + documental * 0.15)
-        
-        if final_score >= 75:
-            status = "green"
-            status_label = "Baixo Risco"
-        elif final_score >= 50:
-            status = "yellow"
-            status_label = "Risco Moderado"
-        else:
-            status = "red"
-            status_label = "Alto Risco"
-        
-        recommendations = self._generate_recommendations(
-            product, profile, sanitario, fitossanitario, 
-            logistico, documental
-        )
-        
-        return {
-            "score": round(final_score, 1),
-            "status": status,
-            "status_label": status_label,
+        assessment_data = {
+            "score": result['score'],
+            "status": result['status'],
+            "status_label": result['status_label'],
+            "components": result['components'],
+            "recommendations": result['recommendations'],
+            "alerts": result['alerts']
+        }
+    else:
+        assessment_data = {
+            "score": latest_assessment.final_score,
+            "status": latest_assessment.status.value,
+            "status_label": "Baixo Risco" if latest_assessment.status.value == "green" else 
+                           "Risco Moderado" if latest_assessment.status.value == "yellow" else "Alto Risco",
             "components": {
-                "Sanitário": round(sanitario, 1),
-                "Fitossanitário": round(fitossanitario, 1),
-                "Logístico": round(logistico, 1),
-                "Documental": round(documental, 1)
+                "Sanitário": latest_assessment.rasff_score or 85.0,
+                "Fitossanitário": latest_assessment.lmr_score or 80.0,
+                "Logístico": latest_assessment.logistic_score or 88.0,
+                "Documental": 82.0
             },
-            "recommendations": recommendations,
+            "recommendations": latest_assessment.recommendations or [],
             "alerts": {
-                "rasff_6m": rasff_alerts_6m,
-                "rasff_12m": rasff_alerts_12m,
-                "historical_rejections": profile['historical_rejections'] if profile else 0
+                "rasff_6m": latest_assessment.rasff_alerts_6m,
+                "rasff_12m": latest_assessment.rasff_alerts_12m,
+                "historical_rejections": 0
             }
         }
     
-    def _generate_recommendations(self, product, profile, sanitario, 
-                                 fitossanitario, logistico, documental):
-        recs = []
+    profile = NCM_RISK_PROFILES.get(product.ncm_code, {})
+    
+    # Construir seções condicionais separadamente
+    alerts_section = ""
+    if assessment_data['alerts']['rasff_12m'] > 0 or assessment_data['alerts']['historical_rejections'] > 0:
+        alerts_section = f"""
+    <div class="section">
+        <h2>⚠️ Alertas e Histórico</h2>
+        <div class="alert-box">
+            <div class="alert-title">Alertas RASFF (Sistema de Alerta Rápido UE)</div>
+            <p>📅 Últimos 6 meses: <strong>{assessment_data['alerts']['rasff_6m']} alertas</strong></p>
+            <p>📅 Últimos 12 meses: <strong>{assessment_data['alerts']['rasff_12m']} alertas</strong></p>
+            <p>📊 Rejeições históricas (NCM): <strong>{assessment_data['alerts']['historical_rejections']} casos</strong></p>
+        </div>
+    </div>
+        """
+    
+    profile_section = ""
+    if profile:
+        common_issues = ', '.join(profile.get('common_issues', [])[:2])
+        profile_section = f"""
+    <div class="section">
+        <h2>🔍 Perfil de Risco do NCM</h2>
+        <div class="info-grid">
+            <div class="info-item">
+                <div class="info-label">Barreiras UE</div>
+                <div class="info-value">{profile['eu_barriers'].upper()}</div>
+            </div>
+            <div class="info-item">
+                <div class="info-label">Problemas Comuns</div>
+                <div class="info-value" style="font-size: 14px;">{common_issues}</div>
+            </div>
+        </div>
+    </div>
+        """
+    
+    recommendations_html = "".join([f'<div class="recommendation-item">{rec}</div>' for rec in assessment_data['recommendations']])
+    
+    direction_text = 'Exportação BR→IT' if product.direction.value == 'export' else 'Importação IT→BR'
+    
+    html_content = f"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>ZOI Trade Advisory - Relatório de Risco</title>
+    <style>
+        @page {{ size: A4; margin: 2cm; }}
+        body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color: #1e293b; line-height: 1.6; }}
+        .header {{ background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%); color: white; padding: 30px; margin: -2cm -2cm 30px -2cm; }}
+        .header h1 {{ margin: 0; font-size: 28px; }}
+        .header p {{ margin: 5px 0 0 0; opacity: 0.9; }}
+        .score-badge {{ display: inline-block; padding: 10px 20px; border-radius: 8px; font-weight: bold; font-size: 24px; margin: 20px 0; }}
+        .score-green {{ background: #dcfce7; color: #166534; }}
+        .score-yellow {{ background: #fef3c7; color: #854d0e; }}
+        .score-red {{ background: #fee2e2; color: #991b1b; }}
+        .section {{ margin: 25px 0; page-break-inside: avoid; }}
+        .section h2 {{ color: #1e40af; border-bottom: 2px solid #3b82f6; padding-bottom: 8px; margin-bottom: 15px; }}
+        .info-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin: 20px 0; }}
+        .info-item {{ background: #f8fafc; padding: 15px; border-radius: 6px; border-left: 4px solid #3b82f6; }}
+        .info-label {{ font-weight: 600; color: #64748b; font-size: 12px; text-transform: uppercase; }}
+        .info-value {{ font-size: 18px; font-weight: bold; color: #0f172a; margin-top: 5px; }}
+        .component-bar {{ margin: 15px 0; }}
+        .component-label {{ font-weight: 600; margin-bottom: 5px; display: flex; justify-content: space-between; }}
+        .bar-container {{ background: #e2e8f0; border-radius: 10px; height: 25px; overflow: hidden; }}
+        .bar-fill {{ background: linear-gradient(90deg, #3b82f6 0%, #60a5fa 100%); height: 100%; display: flex; align-items: center; justify-content: flex-end; padding-right: 10px; color: white; font-weight: bold; font-size: 12px; }}
+        .recommendations {{ background: #eff6ff; border-left: 4px solid #3b82f6; padding: 20px; border-radius: 6px; }}
+        .recommendation-item {{ padding: 8px 0; border-bottom: 1px solid #dbeafe; }}
+        .recommendation-item:last-child {{ border-bottom: none; }}
+        .footer {{ margin-top: 40px; padding-top: 20px; border-top: 2px solid #e2e8f0; text-align: center; color: #64748b; font-size: 12px; }}
+        .alert-box {{ background: #fef3c7; border: 2px solid #fbbf24; border-radius: 8px; padding: 15px; margin: 20px 0; }}
+        .alert-title {{ font-weight: bold; color: #92400e; margin-bottom: 10px; }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🛡️ ZOI Trade Advisory</h1>
+        <p>Relatório Executivo de Análise de Risco Sanitário e Fitossanitário</p>
+    </div>
+
+    <div class="section">
+        <h2>📋 Informações do Produto</h2>
+        <div class="info-grid">
+            <div class="info-item">
+                <div class="info-label">Produto</div>
+                <div class="info-value">{product.name_pt}</div>
+            </div>
+            <div class="info-item">
+                <div class="info-label">Código NCM</div>
+                <div class="info-value">{product.ncm_code}</div>
+            </div>
+            <div class="info-item">
+                <div class="info-label">Direção Comercial</div>
+                <div class="info-value">{direction_text}</div>
+            </div>
+            <div class="info-item">
+                <div class="info-label">Estado do Produto</div>
+                <div class="info-value">{product.state.value.capitalize()}</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>🎯 Score de Risco Global</h2>
+        <div class="score-badge score-{assessment_data['status']}">
+            {assessment_data['score']:.1f}/100 - {assessment_data['status_label']}
+        </div>
+        <p style="color: #64748b; margin-top: 10px;">
+            Data da análise: {datetime.now().strftime('%d/%m/%Y às %H:%M')}
+        </p>
+    </div>
+
+    <div class="section">
+        <h2>📊 Componentes de Risco</h2>
         
-        if sanitario < 70:
-            recs.append("⚠️ Risco sanitário elevado - Reforçar análises laboratoriais de LMR")
-        
-        if fitossanitario < 70:
-            recs.append("🌱
-            recs.append("🌱 Atenção às barreiras fitossanitárias - Certificação obrigatória")
-        
-        if logistico < 75:
-            recs.append("📦 Revisar condições de transporte e temperatura")
-        
-        if documental < 75:
-            recs.append("📄 Documentação incompleta - Verificar certificados de origem")
-        
-        if profile:
-            if profile['eu_barriers'] == 'high':
-                recs.append(f"🇪🇺 Barreiras UE elevadas para {profile['name']} - Consultoria especializada recomendada")
-            
-            if profile['common_issues']:
-                issues_str = ", ".join(profile['common_issues'][:2])
-                recs.append(f"🔍 Pontos críticos históricos: {issues_str}")
-        
-        if product.direction.value == "export":
-            recs.append("📤 Exportação BR→IT - Verificar compliance RASFF")
-        else:
-            recs.append("📥 Importação IT→BR - Validar certificações europeias")
-        
-        if not recs:
-            recs.append("✅ Produto em conformidade - Manter padrões de qualidade")
-        
-        return recs
+        <div class="component-bar">
+            <div class="component-label">
+                <span>🏥 Sanitário</span>
+                <span>{assessment_data['components']['Sanitário']:.1f}/100</span>
+            </div>
+            <div class="bar-container">
+                <div class="bar-fill" style="width: {assessment_data['components']['Sanitário']}%">
+                    {assessment_data['components']['Sanitário']:.0f}%
+                </div>
+            </div>
+        </div>
+
+        <div class="component-bar">
+            <div class="component-label">
+                <span>🌱 Fitossanitário</span>
+                <span>{assessment_data['components']['Fitossanitário']:.1f}/100</span>
+            </div>
+            <div class="bar-container">
+                <div class="bar-fill" style="width: {assessment_data['components']['Fitossanitário']}%">
+                    {assessment_data['components']['Fitossanitário']:.0f}%
+                </div>
+            </div>
+        </div>
+
+        <div class="component-bar">
+            <div class="component-label">
+                <span>📦 Logístico</span>
+                <span>{assessment_data['components']['Logístico']:.1f}/100</span>
+            </div>
+            <div class="bar-container">
+                <div class="bar-fill" style="width: {assessment_data['components']['Logístico']}%">
+                    {assessment_data['components']['Logístico']:.0f}%
+                </div>
+            </div>
+        </div>
+
+        <div class="component-bar">
+            <div class="component-label">
+                <span>📄 Documental</span>
+                <span>{assessment_data['components']['Documental']:.1f}/100</span>
+            </div>
+            <div class="bar-container">
+                <div class="bar-fill" style="width: {assessment_data['components']['Documental']}%">
+                    {assessment_data['components']['Documental']:.0f}%
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {alerts_section}
+    {profile_section}
+
+    <div class="section">
+        <h2>💡 Recomendações Estratégicas</h2>
+        <div class="recommendations">
+            {recommendations_html}
+        </div>
+    </div>
+
+    <div class="footer">
+        <p><strong>ZOI Trade Advisory</strong> - Sistema Bilateral de Compliance Sanitária e Fitossanitária</p>
+        <p>Relatório gerado automaticamente em {datetime.now().strftime('%d/%m/%Y às %H:%M:%S')}</p>
+        <p style="margin-top: 10px; color: #94a3b8;">
+            ⚠️ Este relatório é baseado em dados públicos e análise automatizada. 
+            Para decisões comerciais críticas, consulte especialistas em comércio internacional.
+        </p>
+    </div>
+</body>
+</html>"""
+    
+    # Retornar HTML diretamente (PDF requer biblioteca adicional)
+    return StreamingResponse(
+        iter([html_content.encode()]),
+        media_type="text/html",
+        headers={
+            "Content-Disposition": f"inline; filename=ZOI_Risk_Report_{product_key}_{datetime.now().strftime('%Y%m%d')}.html"
+        }
+    )
 
 
 @app.post("/api/risk/calculate")
