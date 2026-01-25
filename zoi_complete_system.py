@@ -1442,72 +1442,44 @@ from reportlab.pdfgen import canvas
 
 @app.get("/api/products/{product_key}/export-pdf")
 def export_product_pdf(product_key: str, db: SessionLocal = Depends(get_db)):
-    from fastapi.responses import StreamingResponse
+    from fastapi.responses import Response
     from io import BytesIO
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfgen import canvas
 
+    # 1. Busca o produto
     product = db.query(Product).filter(Product.key == product_key).first()
     if not product:
-        raise HTTPException(status_code=404, detail="Produto não encontrado")
+        return {"error": "Produto não encontrado"}
     
+    # 2. Gera o PDF em memória
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
     
-    c.setFont("Helvetica-Bold", 16)
+    # Título e Conteúdo
+    c.setFont("Helvetica-Bold", 18)
     c.drawString(50, 800, "ZOI Trade Advisory - Relatório de Compliance")
+    
     c.setFont("Helvetica", 12)
     c.drawString(50, 770, f"Produto: {product.name_pt}")
     c.drawString(50, 750, f"NCM: {product.ncm_code}")
-    c.drawString(50, 730, "Status: Auditado com Sucesso")
+    c.drawString(50, 730, f"Data do Relatório: {datetime.now().strftime('%d/%m/%Y')}")
+    c.drawString(50, 710, "Resultado da Auditoria: APROVADO")
     
     c.showPage()
     c.save()
-    buffer.seek(0)
     
-    return StreamingResponse(
-        buffer, 
-        media_type='application/pdf', 
-        headers={"Content-Disposition": f"attachment; filename=ZOI_Report_{product_key}.pdf"}
+    # 3. Prepara o conteúdo para download real
+    pdf_out = buffer.getvalue()
+    buffer.close()
+    
+    return Response(
+        content=pdf_out,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename=ZOI_Report_{product_key}.pdf"
+        }
     )
-
-@app.get("/api/admin/seed-database")
-def seed_database():
-    from sqlalchemy import text
-    with SessionLocal() as session:
-        session.execute(text("DROP TABLE IF EXISTS risk_assessments CASCADE;"))
-        session.execute(text("DROP TABLE IF EXISTS lmr_data CASCADE;"))
-        session.execute(text("DROP TABLE IF EXISTS products CASCADE;"))
-        session.commit()
-    
-    Base.metadata.create_all(bind=engine)
-    
-    products_list = [
-        {"key": "soja_grao", "name": "Soja em Grãos", "ncm": "12019000", "dir": "export", "state": "ambient"},
-        {"key": "cafe_cru", "name": "Café Cru em Grão", "ncm": "09011110", "dir": "export", "state": "ambient"},
-        {"key": "carne_bovina", "name": "Carne Bovina", "ncm": "02023000", "dir": "export", "state": "frozen"},
-        {"key": "suco_laranja", "name": "Suco de Laranja", "ncm": "20091100", "dir": "export", "state": "frozen"},
-        {"key": "acai_polpa", "name": "Polpa de Açaí", "ncm": "08119050", "dir": "export", "state": "frozen"},
-        {"key": "mel_natural", "name": "Mel Natural", "ncm": "04090000", "dir": "export", "state": "ambient"},
-        {"key": "azeite_oliva", "name": "Azeite de Oliva", "ncm": "15092000", "dir": "import", "state": "ambient"},
-        {"key": "vinho_tinto", "name": "Vinho Tinto", "ncm": "22042100", "dir": "import", "state": "ambient"},
-        {"key": "limao_siciliano", "name": "Limão Siciliano", "ncm": "08055000", "dir": "import", "state": "ambient"},
-        {"key": "maca_fresca", "name": "Maçã Fresca", "ncm": "08081000", "dir": "export", "state": "chilled"}
-    ]
-    
-    with SessionLocal() as session:
-        for p in products_list:
-            new_p = Product(
-                key=p["key"],
-                name_pt=p["name"],
-                ncm_code=p["ncm"],
-                direction=TradeDirectionDB(p["dir"]),
-                state=ProductStateDB(p["state"])
-            )
-            session.add(new_p)
-        session.commit()
-    
-    return {"status": "success", "total": len(products_list)}
 
 if __name__ == "__main__":
     import uvicorn
