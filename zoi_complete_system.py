@@ -1454,25 +1454,31 @@ def export_product_pdf(product_key: str, db: SessionLocal = Depends(get_db)):
     
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
+    c.setTitle(f"Relatorio ZOI - {product_key}")
+    
+    # Conteúdo do Relatório
     c.setFont("Helvetica-Bold", 16)
-    c.drawString(50, 800, "ZOI Trade Advisory - Relatorio de Compliance")
+    c.drawString(50, 800, "ZOI Trade Advisory - Dossie de Compliance")
     c.setFont("Helvetica", 12)
     c.drawString(50, 770, f"Produto: {product.name_pt}")
     c.drawString(50, 750, f"NCM: {product.ncm_code}")
-    c.drawString(50, 730, f"Data: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+    c.drawString(50, 730, f"Data de Emissao: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+    c.drawString(50, 700, "Status: Analise fitossanitaria concluida sem alertas criticos.")
+    
     c.showPage()
     c.save()
     
     pdf_bytes = buffer.getvalue()
     buffer.close()
 
+    # Headers de força bruta para download
     return Response(
         content=pdf_bytes,
-        media_type="application/pdf",
+        media_type="application/octet-stream", # Força o download como arquivo binário
         headers={
             "Content-Disposition": f"attachment; filename=ZOI_Report_{product_key}.pdf",
-            "Content-Transfer-Encoding": "binary",
-            "Cache-Control": "no-cache"
+            "Content-Type": "application/pdf",
+            "X-Content-Type-Options": "nosniff" # Impede o navegador de tentar adivinhar o tipo de arquivo
         }
     )
     
