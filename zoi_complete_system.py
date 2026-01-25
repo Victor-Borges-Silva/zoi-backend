@@ -1446,41 +1446,36 @@ def export_product_pdf(product_key: str, db: SessionLocal = Depends(get_db)):
     from io import BytesIO
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfgen import canvas
+    from datetime import datetime
 
-    # 1. Busca o produto
     product = db.query(Product).filter(Product.key == product_key).first()
     if not product:
-        return {"error": "Produto não encontrado"}
+        return Response(content="Produto nao encontrado", status_code=404)
     
-    # 2. Gera o PDF em memória
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
-    
-    # Título e Conteúdo
-    c.setFont("Helvetica-Bold", 18)
-    c.drawString(50, 800, "ZOI Trade Advisory - Relatório de Compliance")
-    
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(50, 800, "ZOI Trade Advisory - Relatorio de Compliance")
     c.setFont("Helvetica", 12)
     c.drawString(50, 770, f"Produto: {product.name_pt}")
     c.drawString(50, 750, f"NCM: {product.ncm_code}")
-    c.drawString(50, 730, f"Data do Relatório: {datetime.now().strftime('%d/%m/%Y')}")
-    c.drawString(50, 710, "Resultado da Auditoria: APROVADO")
-    
+    c.drawString(50, 730, f"Data: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
     c.showPage()
     c.save()
     
-    # 3. Prepara o conteúdo para download real
-    pdf_out = buffer.getvalue()
+    pdf_bytes = buffer.getvalue()
     buffer.close()
-    
+
     return Response(
-        content=pdf_out,
+        content=pdf_bytes,
         media_type="application/pdf",
         headers={
-            "Content-Disposition": f"attachment; filename=ZOI_Report_{product_key}.pdf"
+            "Content-Disposition": f"attachment; filename=ZOI_Report_{product_key}.pdf",
+            "Content-Transfer-Encoding": "binary",
+            "Cache-Control": "no-cache"
         }
     )
-
+    
 if __name__ == "__main__":
     import uvicorn
     Base.metadata.create_all(bind=engine)
