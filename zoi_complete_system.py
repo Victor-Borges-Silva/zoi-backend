@@ -1441,7 +1441,12 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
 @app.get("/api/products/{product_key}/export-pdf")
-def export_product_pdf(product_key: str, db: Session = Depends(get_db)):
+def export_product_pdf(product_key: str, db: SessionLocal = Depends(get_db)):
+    from fastapi.responses import StreamingResponse
+    from io import BytesIO
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+
     product = db.query(Product).filter(Product.key == product_key).first()
     if not product:
         raise HTTPException(status_code=404, detail="Produto não encontrado")
@@ -1469,7 +1474,7 @@ def export_product_pdf(product_key: str, db: Session = Depends(get_db)):
 @app.get("/api/admin/seed-database")
 def seed_database():
     from sqlalchemy import text
-    with Session(engine) as session:
+    with SessionLocal() as session:
         session.execute(text("DROP TABLE IF EXISTS risk_assessments CASCADE;"))
         session.execute(text("DROP TABLE IF EXISTS lmr_data CASCADE;"))
         session.execute(text("DROP TABLE IF EXISTS products CASCADE;"))
@@ -1490,7 +1495,7 @@ def seed_database():
         {"key": "maca_fresca", "name": "Maçã Fresca", "ncm": "08081000", "dir": "export", "state": "chilled"}
     ]
     
-    with Session(engine) as session:
+    with SessionLocal() as session:
         for p in products_list:
             new_p = Product(
                 key=p["key"],
