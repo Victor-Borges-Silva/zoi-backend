@@ -118,7 +118,9 @@ def _run_dyad_agent(self, ncm_code: str, product_name: str) -> Optional[Dict]:
         except Exception as e:
             print(f"❌ Erro inesperado no agente Dyad: {e}")
         
-        return Noneclass DyadComplianceNavigator:
+        return None
+        
+class DyadComplianceNavigator:
     """
     Intelligent compliance data navigator using Dyad REST API.
     Fallback to historical data if Dyad is unavailable.
