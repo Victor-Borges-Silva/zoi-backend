@@ -1,9 +1,21 @@
 fastapi
 uvicorn
 sqlalchemy
-python-jose[cryptography]
-passlib[bcrypt]
-python-multipart
-python-dotenv
-dyad-py
+psycopg2-binary
+selenium
+beautifulsoup4
 requests
+pandas
+pydantic
+python-multipart
+python-jose[cryptography]
+passlib
+bcrypt
+apscheduler
+celery
+redis
+python-dotenv
+email-validator
+weasyprint==59.0
+reportlab==4.0.7
+pip install dyad-sdk
