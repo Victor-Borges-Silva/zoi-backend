@@ -1,4 +1,146 @@
-"""
+def _run_dyad_agent(self, ncm_code: str, product_name: str) -> Optional[Dict]:
+        """
+        Executa agente Dyad via REST API para navegar nos portais de compliance.
+        """
+        
+        if not self.dyad_api_key:
+            print("⚠️ DYAD_API_KEY não configurada")
+            return None
+        
+        print("🌐 Iniciando navegação inteligente via Dyad REST API...")
+        
+        # Criar instruções para o agente
+        agent_instructions = f"""
+        You are a specialized compliance data navigator for international food trade.
+        
+        YOUR MISSION:
+        Navigate to the EU RASFF (Rapid Alert System for Food and Feed) portal and ANVISA Brazil portal
+        to gather compliance data about the following product:
+        
+        - Product: {product_name}
+        - NCM Code: {ncm_code}
+        - Origin: Brazil
+        
+        SPECIFIC TASKS:
+        1. Access RASFF Window (https://webgate.ec.europa.eu/rasff-window/)
+        2. Search for notifications involving 'Brazil' AND NCM '{ncm_code}'
+        3. Count alerts in the last 90 days, 6 months, and 12 months
+        4. Identify the top 3 rejection reasons (e.g., pesticide residues, contamination, certification issues)
+        5. Access ANVISA portal (https://www.gov.br/anvisa/) for complementary data
+        6. Extract LMR (Maximum Residue Limits) information if available
+        
+        IMPORTANT:
+        - Focus on recent data (last 12 months prioritized)
+        - Distinguish between alert severity (serious risk vs border rejection)
+        - Note specific substances/contaminants mentioned
+        - Record source URLs for traceability
+        
+        RETURN FORMAT (JSON):
+        {{
+            "rasff_alerts_90d": <number>,
+            "rasff_alerts_6m": <number>,
+            "rasff_alerts_12m": <number>,
+            "rejection_reasons": ["reason1", "reason2", "reason3"],
+            "critical_substances": ["substance1", "substance2"],
+            "source_urls": ["url1", "url2"],
+            "last_incident_date": "YYYY-MM-DD",
+            "confidence_level": "high/medium/low"
+        }}
+        """
+        
+        try:
+            # Chamar API REST do Dyad
+            print("⏳ Enviando requisição para Dyad API...")
+            
+            response = requests.post(
+                f"{self.dyad_base_url}/v1/agents/run",
+                headers={
+                    "Authorization": f"Bearer {self.dyad_api_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "instructions": agent_instructions,
+                    "timeout": 60,
+                    "max_steps": 15
+                },
+                timeout=65
+            )
+            
+            if response.status_code != 200:
+                print(f"❌ Dyad API retornou status {response.status_code}: {response.text}")
+                return None
+            
+            result = response.json()
+            
+            # Parse da resposta
+            if result and 'result' in result:
+                result_data = json.loads(result['result']) if isinstance(result['result'], str) else result['result']
+                
+                print(f"📊 Dados extraídos:")
+                print(f"   - Alertas 90d: {result_data.get('rasff_alerts_90d', 0)}")
+                print(f"   - Alertas 6m: {result_data.get('rasff_alerts_6m', 0)}")
+                print(f"   - Alertas 12m: {result_data.get('rasff_alerts_12m', 0)}")
+                print(f"   - Confiança: {result_data.get('confidence_level', 'unknown')}")
+                
+                # Calcular scores baseados nos dados coletados
+                sanitario_score = self._calculate_sanitario_score(
+                    result_data.get('rasff_alerts_6m', 0),
+                    result_data.get('rasff_alerts_12m', 0),
+                    ncm_code
+                )
+                
+                fitossanitario_score = self._calculate_fitossanitario_score(
+                    result_data.get('critical_substances', []),
+                    result_data.get('rejection_reasons', []),
+                    ncm_code
+                )
+                
+                return {
+                    'source': 'dyad',
+                    'rasff_alerts_90d': result_data.get('rasff_alerts_90d', 0),
+                    'rasff_alerts_6m': result_data.get('rasff_alerts_6m', 0),
+                    'rasff_alerts_12m': result_data.get('rasff_alerts_12m', 0),
+                    'main_rejection_reasons': result_data.get('rejection_reasons', []),
+                    'critical_substances': result_data.get('critical_substances', []),
+                    'sanitario_score': sanitario_score,
+                    'fitossanitario_score': fitossanitario_score,
+                    'timestamp': datetime.utcnow(),
+                    'confidence': result_data.get('confidence_level', 'medium'),
+                    'source_urls': result_data.get('source_urls', [])
+                }
+            
+        except requests.Timeout:
+            print("⏱️ Timeout ao executar agente Dyad")
+        except requests.RequestException as e:
+            print(f"❌ Erro de conexão com Dyad API: {e}")
+        except json.JSONDecodeError as e:
+            print(f"❌ Erro ao decodificar JSON da resposta Dyad: {e}")
+        except Exception as e:
+            print(f"❌ Erro inesperado no agente Dyad: {e}")
+        
+        return Noneclass DyadComplianceNavigator:
+    """
+    Intelligent compliance data navigator using Dyad REST API.
+    Fallback to historical data if Dyad is unavailable.
+    """
+    
+    def __init__(self):
+        self.dyad_api_key = os.environ.get('DYAD_API_KEY')
+        self.dyad_base_url = os.environ.get('DYAD_API_URL', 'https://api.dyad.sh')
+        self.client = None
+        
+        if self.dyad_api_key:
+            print(f"✅ Dyad API configurada: {self.dyad_base_url}")
+        else:
+            print("⚠️ DYAD_API_KEY não configurada - usando modo fallback")# ==================================================================================
+# DYAD INTEGRATION - Intelligent Web Navigation via REST API
+# ==================================================================================
+
+# Dyad funciona via API REST - não precisa de SDK específico
+DYAD_AVAILABLE = True
+print("✅ Dyad REST API configurado (usando requests)")
+
+Base = declarative_base()"""
 ZOI Trade Advisory - Complete Production System with Dyad Integration
 Version 2.1 - Intelligent Navigation with AI Agents
 """
@@ -33,13 +175,18 @@ from passlib.context import CryptContext
 # DYAD INTEGRATION - Intelligent Web Navigation
 # ==================================================================================
 
-try:
-    from dyad import DyadClient
-    DYAD_AVAILABLE = True
-    print("✅ Dyad SDK disponível")
-except ImportError:
-    DYAD_AVAILABLE = False
-    print("⚠️ Dyad SDK não encontrado - usando modo fallback")
+# Dyad SDK ainda não disponível no PyPI - usando modo fallback
+# Quando o SDK estiver disponível, descomente as linhas abaixo:
+# try:
+#     from dyad import DyadClient
+#     DYAD_AVAILABLE = True
+#     print("✅ Dyad SDK disponível")
+# except ImportError:
+#     DYAD_AVAILABLE = False
+#     print("⚠️ Dyad SDK não encontrado - usando modo fallback")
+
+DYAD_AVAILABLE = False
+print("ℹ️ Sistema rodando em modo fallback (dados históricos NCM)")
 
 Base = declarative_base()
 
@@ -274,15 +421,8 @@ class DyadComplianceNavigator:
         self.dyad_api_key = os.environ.get('DYAD_API_KEY')
         self.client = None
         
-        if DYAD_AVAILABLE and self.dyad_api_key:
-            try:
-                self.client = DyadClient(api_key=self.dyad_api_key)
-                print("✅ Dyad Client inicializado com sucesso")
-            except Exception as e:
-                print(f"⚠️ Erro ao inicializar Dyad Client: {e}")
-                self.client = None
-        else:
-            print("⚠️ Dyad não disponível - usando modo fallback")
+        # Dyad SDK ainda não disponível - sempre usa fallback
+        print("⚠️ Dyad SDK não disponível - sistema usando dados históricos")
     
     def fetch_dyad_compliance_data(self, ncm_code: str, product_name: str) -> Dict:
         """
