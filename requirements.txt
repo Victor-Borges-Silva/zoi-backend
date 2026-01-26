@@ -18,4 +18,8 @@ python-dotenv
 email-validator
 weasyprint==59.0
 reportlab==4.0.7
+pip
+install
+dyad-sdk
+dyad-py
 
