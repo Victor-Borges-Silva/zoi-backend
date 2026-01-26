@@ -139,10 +139,12 @@ class DyadComplianceNavigator:
 # ==================================================================================
 
 # Dyad funciona via API REST - não precisa de SDK específico
+
 DYAD_AVAILABLE = True
 print("✅ Dyad REST API configurado (usando requests)")
 
 Base = declarative_base()"""
+
 ZOI Trade Advisory - Complete Production System with Dyad Integration
 Version 2.1 - Intelligent Navigation with AI Agents
 """
