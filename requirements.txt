@@ -1,15 +1,9 @@
-# Requirements.txt COM Dyad SDK (use este quando tiver a API key do Dyad)
-
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-sqlalchemy==2.0.23
-psycopg2-binary==2.9.9
-python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
-python-multipart==0.0.6
-pydantic[email]==2.5.0
-requests==2.31.0
-beautifulsoup4==4.12.2
-lxml==4.9.3
-python-dotenv==1.0.0
-dyad-sdk==0.1.0
+fastapi
+uvicorn
+sqlalchemy
+python-jose[cryptography]
+passlib[bcrypt]
+python-multipart
+python-dotenv
+requests
+psycopg2-binary
