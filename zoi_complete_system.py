@@ -1,813 +1,907 @@
 """
-ZOI Sentinel - Trade Advisory System with AI Data Sovereignty
-Version 3.0 - Dyad AI as Primary Data Source
-Data Sovereignty: Dyad AI is the single source of truth for all compliance data
-FIXED: Auto-migração de banco de dados
+ZOI Sentinel v4.0 - Zero Database Architecture
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🧠 LIVING INTELLIGENCE SYSTEM
+   - Zero Dependency on Static Compliance Tables
+   - AI-Driven Real-Time Research (Manus AI / Dyad)
+   - 24-Hour Cache Strategy Only
+   - Premium PDF Reports (Business Class Design)
+
+📡 DATA SOVEREIGNTY v2.0
+   - Manus AI Agent searches MAPA, ANVISA, Siscomex in real-time
+   - Database serves ONLY as 24h cache
+   - Mandatory fresh search if data > 24 hours old
+
+🎯 TARGET ARCHITECTURE
+   - Frontend Request → Check Cache (< 24h?) → If YES: Return
+   - If NO: Launch Manus AI → Wait for completion → Save → Return
+   - PDF Generation: ALWAYS wait for AI completion
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
-import re
 import os
 import json
-import time
-import enum
 import logging
-import smtplib
-import requests
-from pathlib import Path
+import asyncio
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any, Union
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+from typing import Dict, List, Optional, Any
 from io import BytesIO
 
-from bs4 import BeautifulSoup
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, JSON, ForeignKey, Text, Enum as SQLEnum, inspect
+import requests
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, JSON, Text, Enum as SQLEnum
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, status
+from sqlalchemy.orm import sessionmaker
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from fastapi.responses import StreamingResponse, Response
-from pydantic import BaseModel, EmailStr
-from jose import JWTError, jwt
-from passlib.context import CryptContext
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import cm
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+from reportlab.pdfgen import canvas
 
-# ==================================================================================
-# CONFIGURAÇÃO DE LOGGING
-# ==================================================================================
+# ══════════════════════════════════════════════════════════════════════════════
+# LOGGING CONFIGURATION
+# ══════════════════════════════════════════════════════════════════════════════
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger("ZOI_SENTINEL")
+logger = logging.getLogger("ZOI_SENTINEL_V4")
 
-# ==================================================================================
-# DYAD AI COMPLIANCE NAVIGATOR - SOBERANIA DE DADOS
-# ==================================================================================
+# ══════════════════════════════════════════════════════════════════════════════
+# DATABASE CONFIGURATION (24-HOUR CACHE ONLY)
+# ══════════════════════════════════════════════════════════════════════════════
 
-class DyadComplianceNavigator:
-    """
-    🧠 CÉREBRO DO SISTEMA ZOI SENTINEL - DATA SOVEREIGNTY
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    "postgresql://user:password@localhost:5432/zoi_db"
+).replace("postgres://", "postgresql://")
+
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DATABASE MODELS (CACHE ONLY - NO STATIC COMPLIANCE DATA)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class Product(Base):
+    """Product Master Data (Basic Info Only)"""
+    __tablename__ = "products"
     
-    Esta classe é a ÚNICA fonte de verdade para dados de compliance.
-    Todos os dados retornados pela Dyad sobrescrevem dados antigos no banco.
+    id = Column(Integer, primary_key=True, index=True)
+    key = Column(String, unique=True, index=True, nullable=False)
+    name_pt = Column(String, nullable=False)
+    name_it = Column(String)
+    ncm_code = Column(String, nullable=False, index=True)
+    direction = Column(String)  # "export" or "import"
+    
+    # AI Cache (Living Intelligence Data)
+    ai_last_check = Column(DateTime, nullable=True)  # Last AI search timestamp
+    ai_raw_response = Column(JSON, nullable=True)  # Full AI response
+    ai_status = Column(String, nullable=True)  # "green", "yellow", "red"
+    ai_score = Column(Float, nullable=True)
+    ai_risk_factors = Column(JSON, nullable=True)
+    ai_compliance_alerts = Column(JSON, nullable=True)
+    ai_technical_specs = Column(JSON, nullable=True)
+    ai_barriers = Column(JSON, nullable=True)
+    ai_documents_required = Column(JSON, nullable=True)
+    ai_estimated_costs = Column(JSON, nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+Base.metadata.create_all(bind=engine)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MANUS AI / DYAD AGENT INTEGRATION
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ManusAIResearchAgent:
+    """
+    🤖 MANUS AI RESEARCH AGENT - ZERO DATABASE APPROACH
+    
+    This agent replaces ALL static compliance tables.
+    It performs real-time research on:
+    - MAPA (SISCOLE/Vigiagro)
+    - ANVISA
+    - Siscomex
+    
+    Returns structured data for immediate use.
     """
     
     def __init__(self):
-        self.api_key = os.environ.get('DYAD_API_KEY')
-        self.api_url = os.environ.get('DYAD_API_URL', 'https://api.dyad.sh/v1/agents/run')
+        # Try Manus AI first, fallback to Dyad
+        self.manus_api_key = os.environ.get('MANUS_API_KEY')
+        self.manus_api_url = os.environ.get(
+            'MANUS_API_URL', 
+            'https://api.manus.ai/v1/research'
+        )
         
-        if not self.api_key:
-            logger.warning("⚠️ AVISO: DYAD_API_KEY não configurada! Data Sovereignty comprometida.")
+        self.dyad_api_key = os.environ.get('DYAD_API_KEY')
+        self.dyad_api_url = os.environ.get(
+            'DYAD_API_URL',
+            'https://api.dyad.sh/v1/agents/run'
+        )
+        
+        if self.manus_api_key:
+            logger.info("✅ Manus AI configured - Using as primary research agent")
+            self.use_manus = True
+        elif self.dyad_api_key:
+            logger.info("✅ Dyad AI configured - Using as research agent")
+            self.use_manus = False
         else:
-            logger.info(f"✅ Dyad API inicializada: {self.api_url}")
+            logger.error("❌ NO AI AGENT CONFIGURED! System cannot operate.")
+            raise ValueError("MANUS_API_KEY or DYAD_API_KEY required for v4.0")
     
-    def get_compliance_intelligence(self, ncm_code: str, product_name: str, target_market: str = "EU") -> Optional[Dict[str, Any]]:
+    def run_deep_search(
+        self,
+        product_name: str,
+        ncm_code: str,
+        direction: str,
+        origin_country: str = "Brasil",
+        destination_country: str = "Itália"
+    ) -> Optional[Dict[str, Any]]:
         """
-        🎯 MÉTODO PRINCIPAL DE SOBERANIA DE DADOS
+        🔍 DEEP SEARCH - REAL-TIME COMPLIANCE RESEARCH
         
-        Busca inteligência de compliance via IA da Dyad.
-        Este é o método que define a verdade dos dados no sistema.
+        This method performs live research on Brazilian regulatory portals
+        and returns structured compliance intelligence.
+        
+        Args:
+            product_name: Product name in Portuguese
+            ncm_code: 8-digit NCM code
+            direction: "export" or "import"
+            origin_country: Origin (default: Brasil)
+            destination_country: Destination (default: Itália)
+        
+        Returns:
+            Structured dict with all compliance data
         """
         
-        if not self.api_key:
-            logger.error("❌ CRÍTICO: Dyad API não configurada. Data Sovereignty impossível.")
-            return None
-        
-        if not ncm_code or ncm_code.strip() == "":
-            logger.error(f"❌ ERRO CRÍTICO: NCM vazio para produto '{product_name}'. Validação falhou.")
+        if not ncm_code or len(ncm_code) != 8:
+            logger.error(f"❌ Invalid NCM code: {ncm_code}")
             return None
         
         try:
-            logger.info(f"\n{'='*80}")
-            logger.info(f"🧠 DYAD AI - SOBERANIA DE DADOS INICIADA")
-            logger.info(f"Produto: {product_name}")
+            logger.info(f"\n{'━'*80}")
+            logger.info(f"🔍 DEEP SEARCH INITIATED - ZOI Sentinel v4.0")
+            logger.info(f"Product: {product_name}")
             logger.info(f"NCM: {ncm_code}")
-            logger.info(f"Mercado: {target_market}")
-            logger.info(f"{'='*80}")
+            logger.info(f"Direction: {direction}")
+            logger.info(f"Route: {origin_country} → {destination_country}")
+            logger.info(f"Agent: {'Manus AI' if self.use_manus else 'Dyad AI'}")
+            logger.info(f"{'━'*80}\n")
             
-            prompt = f"""
-Você é o sistema de inteligência de compliance comercial ZOI Sentinel.
-
-PRODUTO: {product_name}
-NCM: {ncm_code}
-MERCADO DESTINO: {target_market}
-
-MISSÃO:
-Compile os dados mais recentes e precisos sobre requisitos de exportação deste produto do Brasil para a União Europeia.
-
-DADOS OBRIGATÓRIOS:
-1. **risk_score**: Calcule um score de risco de 0-100 (quanto maior, melhor)
-2. **risk_status**: Classifique como "green" (>80), "yellow" (60-80) ou "red" (<60)
-3. **risk_factors**: Lista de fatores de risco específicos
-4. **compliance_alerts**: Lista de alertas e exigências regulatórias
-5. **technical_specs**: Especificações técnicas e certificações necessárias
-6. **lmr_data**: Limites Máximos de Resíduos com substâncias e valores
-7. **rasff_alerts**: Contagem de alertas sanitários (6 meses e 12 meses)
-8. **certifications**: Certificações obrigatórias (booleanos)
-9. **barriers**: Barreiras não-tarifárias
-10. **recommendations**: Recomendações práticas
-
-FORMATO DE RESPOSTA (JSON ESTRITO):
-{{
-  "risk_score": 75.5,
-  "risk_status": "yellow",
-  "risk_factors": [
-    "Fator 1: Descrição detalhada do risco",
-    "Fator 2: Descrição detalhada do risco"
-  ],
-  "compliance_alerts": [
-    "Alerta 1: Requisito regulatório específico",
-    "Alerta 2: Requisito regulatório específico"
-  ],
-  "technical_specs": [
-    "Especificação 1: Detalhe técnico completo",
-    "Especificação 2: Detalhe técnico completo"
-  ],
-  "lmr_data": [
-    {{"substance": "Nome da substância", "eu_limit_mg_kg": 0.5, "br_limit_mg_kg": 1.0, "source": "Regulamento EU 396/2005"}}
-  ],
-  "rasff_alerts": {{
-    "last_6_months": 2,
-    "last_12_months": 5,
-    "common_issues": ["Problema comum 1", "Problema comum 2"]
-  }},
-  "certifications": {{
-    "phytosanitary": true,
-    "health": false,
-    "origin": true,
-    "additional": ["Certificado X", "Certificado Y"]
-  }},
-  "barriers": [
-    "Barreira 1: Descrição completa da restrição",
-    "Barreira 2: Descrição completa da restrição"
-  ],
-  "recommendations": [
-    "Recomendação 1: Ação concreta e específica",
-    "Recomendação 2: Ação concreta e específica"
-  ],
-  "data_quality": {{
-    "confidence_level": "high",
-    "sources": ["Fonte oficial 1", "Fonte oficial 2"],
-    "last_verified": "2026-01-26"
-  }}
-}}
-
-REGRAS CRÍTICAS:
-- Retorne APENAS JSON válido, sem texto antes ou depois
-- Todos os arrays devem conter strings descritivas e completas
-- risk_factors, compliance_alerts e technical_specs são OBRIGATÓRIOS
-- Se não houver dados para um campo, use array vazio []
-- Valores numéricos devem ser precisos e baseados em dados reais
-"""
-            
-            payload = {
-                "instructions": prompt,
-                "max_steps": 15,
-                "timeout_seconds": 150
-            }
-            
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json"
-            }
-            
-            logger.info(f"📡 Enviando requisição para Dyad API...")
-            start_time = time.time()
-            
-            response = requests.post(
-                self.api_url,
-                json=payload,
-                headers=headers,
-                timeout=160
-            )
-            
-            elapsed_time = time.time() - start_time
-            logger.info(f"⏱️ Tempo de resposta: {elapsed_time:.2f}s")
-            
-            if response.status_code == 200:
-                result = response.json()
-                logger.info(f"✅ Resposta recebida da Dyad API")
-                
-                output_text = result.get('output', '')
-                compliance_data = self._extract_and_validate_json(output_text)
-                
-                if compliance_data:
-                    logger.info(f"✅ SOBERANIA DE DADOS: Dados parseados e validados")
-                    logger.info(f"📊 Risk Score: {compliance_data.get('risk_score', 'N/A')}")
-                    logger.info(f"🚦 Risk Status: {compliance_data.get('risk_status', 'N/A')}")
-                    
-                    compliance_data['_metadata'] = {
-                        'retrieved_at': datetime.utcnow().isoformat(),
-                        'source': 'dyad_ai',
-                        'api_response_time_seconds': elapsed_time,
-                        'ncm_code': ncm_code,
-                        'product_name': product_name
-                    }
-                    
-                    return compliance_data
-                else:
-                    logger.error(f"❌ FALHA NA SOBERANIA: Não foi possível parsear JSON")
-                    return None
-                    
+            if self.use_manus:
+                return self._run_manus_search(
+                    product_name, ncm_code, direction,
+                    origin_country, destination_country
+                )
             else:
-                logger.error(f"❌ Erro na API Dyad: Status {response.status_code}")
-                return None
-                
-        except requests.exceptions.Timeout:
-            logger.error(f"⏱️ TIMEOUT: Dyad API não respondeu em 160s")
-            return None
+                return self._run_dyad_search(
+                    product_name, ncm_code, direction,
+                    origin_country, destination_country
+                )
+        
         except Exception as e:
-            logger.error(f"❌ Erro inesperado: {e}")
+            logger.error(f"❌ Deep Search Failed: {e}")
             import traceback
             traceback.print_exc()
             return None
     
-    def _extract_and_validate_json(self, text: str) -> Optional[Dict[str, Any]]:
-        """Extrai e valida JSON da resposta"""
+    def _run_manus_search(
+        self, product_name, ncm_code, direction, origin, destination
+    ) -> Optional[Dict]:
+        """Execute Manus AI research"""
+        
+        prompt = f"""
+# TAREFA: Pesquisa de Compliance para Exportação Brasil → Itália
+
+## PRODUTO
+- Nome: {product_name}
+- NCM: {ncm_code}
+- Origem: {origin}
+- Destino: {destination}
+- Direção: {direction}
+
+## PORTAIS OBRIGATÓRIOS PARA CONSULTA
+1. **MAPA (Ministério da Agricultura)**
+   - SISCOLE (Sistema de Controle de Exportação)
+   - Vigiagro (Vigilância Agropecuária)
+   - URL: https://sistemasweb.agricultura.gov.br/
+   
+2. **ANVISA (Agência Nacional de Vigilância Sanitária)**
+   - Regularização de Alimentos
+   - URL: https://www.gov.br/anvisa/
+   
+3. **Siscomex (Sistema Integrado de Comércio Exterior)**
+   - Documentação de exportação
+   - URL: https://www.gov.br/siscomex/
+
+## ESTRUTURA DE RESPOSTA OBRIGATÓRIA (JSON)
+
+```json
+{{
+  "status": "green|yellow|red",
+  "score": 0-100,
+  "risk_factors": [
+    "Lista de fatores de risco identificados"
+  ],
+  "compliance_alerts": [
+    "Alertas regulatórios específicos"
+  ],
+  "technical_specs": [
+    "Especificações técnicas e LMRs"
+  ],
+  "barriers": {{
+    "sanitary": ["Barreiras sanitárias específicas"],
+    "phytosanitary": ["Barreiras fitossanitárias"],
+    "documentary": ["Documentos obrigatórios"]
+  }},
+  "documents_required": [
+    {{
+      "name": "Nome do documento",
+      "issuer": "Órgão emissor",
+      "validity": "Prazo de validade"
+    }}
+  ],
+  "estimated_costs": {{
+    "certifications": "R$ XXX",
+    "inspections": "R$ XXX",
+    "documentation": "R$ XXX",
+    "total_landing_cost_estimate": "R$ XXX"
+  }},
+  "sources": ["URLs consultadas"],
+  "last_updated": "ISO 8601 timestamp"
+}}
+```
+
+IMPORTANTE: Retorne APENAS o JSON, sem texto adicional.
+"""
+        
+        payload = {
+            "query": prompt,
+            "sources": [
+                "https://sistemasweb.agricultura.gov.br/",
+                "https://www.gov.br/anvisa/",
+                "https://www.gov.br/siscomex/"
+            ],
+            "max_tokens": 4000,
+            "temperature": 0.3
+        }
+        
+        headers = {
+            "Authorization": f"Bearer {self.manus_api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        logger.info("📡 Sending request to Manus AI...")
+        start_time = datetime.now()
+        
+        response = requests.post(
+            self.manus_api_url,
+            json=payload,
+            headers=headers,
+            timeout=120
+        )
+        
+        elapsed = (datetime.now() - start_time).total_seconds()
+        logger.info(f"⏱️ Manus AI response time: {elapsed:.1f}s")
+        
+        if response.status_code != 200:
+            logger.error(f"❌ Manus AI error: {response.status_code}")
+            logger.error(f"Response: {response.text}")
+            return None
+        
+        data = response.json()
+        
+        # Extract JSON from response
+        result_text = data.get('result', data.get('response', ''))
+        
+        # Try to extract JSON
         try:
-            data = json.loads(text)
-            return self._validate_structure(data)
-        except json.JSONDecodeError:
-            import re
-            json_pattern = r'\{(?:[^{}]|(?:\{(?:[^{}]|(?:\{[^{}]*\}))*\}))*\}'
-            matches = re.findall(json_pattern, text, re.DOTALL)
+            # Remove markdown code blocks if present
+            if '```json' in result_text:
+                result_text = result_text.split('```json')[1].split('```')[0]
+            elif '```' in result_text:
+                result_text = result_text.split('```')[1].split('```')[0]
             
-            for match in matches:
-                try:
-                    data = json.loads(match)
-                    validated = self._validate_structure(data)
-                    if validated:
-                        return validated
-                except json.JSONDecodeError:
-                    continue
-            
+            parsed = json.loads(result_text.strip())
+            logger.info("✅ Manus AI research completed successfully")
+            return parsed
+        
+        except json.JSONDecodeError as e:
+            logger.error(f"❌ Failed to parse Manus AI JSON: {e}")
+            logger.error(f"Raw response: {result_text[:500]}")
             return None
     
-    def _validate_structure(self, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Valida estrutura de dados"""
-        required_fields = ['risk_score', 'risk_status', 'risk_factors', 'compliance_alerts', 'technical_specs']
+    def _run_dyad_search(
+        self, product_name, ncm_code, direction, origin, destination
+    ) -> Optional[Dict]:
+        """Execute Dyad AI research (fallback)"""
         
-        for field in required_fields:
-            if field not in data:
-                logger.warning(f"⚠️ Campo obrigatório ausente: {field}")
-                return None
+        prompt = f"""
+Você é o agente de pesquisa de compliance do ZOI Sentinel v4.0.
+
+PRODUTO: {product_name}
+NCM: {ncm_code}
+ROTA: {origin} → {destination}
+DIREÇÃO: {direction}
+
+PORTAIS A CONSULTAR:
+1. MAPA/SISCOLE/Vigiagro
+2. ANVISA
+3. Siscomex
+
+Retorne um JSON com:
+- status (green/yellow/red)
+- score (0-100)
+- risk_factors (lista)
+- compliance_alerts (lista)
+- technical_specs (lista)
+- barriers (objeto com sanitary, phytosanitary, documentary)
+- documents_required (lista de objetos)
+- estimated_costs (objeto com certifications, inspections, documentation, total_landing_cost_estimate)
+- sources (URLs consultadas)
+- last_updated (timestamp)
+
+RETORNE APENAS O JSON, sem texto adicional.
+"""
         
-        # Normalizar listas
-        list_fields = ['risk_factors', 'compliance_alerts', 'technical_specs', 'barriers', 'recommendations']
-        for field in list_fields:
-            if field in data:
-                if isinstance(data[field], str):
-                    data[field] = [item.strip() for item in data[field].split('\n') if item.strip()]
-                elif not isinstance(data[field], list):
-                    data[field] = []
-        
-        if data['risk_status'] not in ['green', 'yellow', 'red']:
-            data['risk_status'] = 'yellow'
-        
-        data.setdefault('lmr_data', [])
-        data.setdefault('rasff_alerts', {'last_6_months': 0, 'last_12_months': 0, 'common_issues': []})
-        data.setdefault('certifications', {'phytosanitary': True, 'health': False, 'origin': True, 'additional': []})
-        data.setdefault('barriers', [])
-        data.setdefault('recommendations', [])
-        
-        return data
-
-
-# ==================================================================================
-# MODELOS DO BANCO DE DADOS
-# ==================================================================================
-
-
-# ==================================================================================
-# PERFIS DE RISCO NCM
-# ==================================================================================
-
-NCM_RISK_PROFILES = {
-    "08055000": {
-        "name": "Limão/Lima",
-        "eu_barriers": "high",
-        "historical_rejections": 12,
-        "sanitario_base": 75.0,
-        "fitossanitario_base": 68.0,
-        "logistico_base": 85.0,
-        "documental_base": 72.0
-    },
-    "12019000": {
-        "name": "Soja em Grãos",
-        "eu_barriers": "medium",
-        "historical_rejections": 5,
-        "sanitario_base": 88.0,
-        "fitossanitario_base": 82.0,
-        "logistico_base": 92.0,
-        "documental_base": 85.0
-    },
-    "09011110": {
-        "name": "Café Cru",
-        "eu_barriers": "low",
-        "historical_rejections": 2,
-        "sanitario_base": 92.0,
-        "fitossanitario_base": 90.0,
-        "logistico_base": 88.0,
-        "documental_base": 95.0
-    },
-    "02023000": {
-        "name": "Carne Bovina",
-        "eu_barriers": "high",
-        "historical_rejections": 18,
-        "sanitario_base": 72.0,
-        "fitossanitario_base": 78.0,
-        "logistico_base": 65.0,
-        "documental_base": 68.0
-    },
-    "20091100": {
-        "name": "Suco de Laranja",
-        "eu_barriers": "medium",
-        "historical_rejections": 8,
-        "sanitario_base": 80.0,
-        "fitossanitario_base": 75.0,
-        "logistico_base": 88.0,
-        "documental_base": 82.0
-    }
-}
-
-Base = declarative_base()
-
-
-class TradeDirectionDB(enum.Enum):
-    EXPORT = "export"
-    IMPORT = "import"
-
-
-class ProductStateDB(str, enum.Enum):
-    ambient = "ambient"
-    frozen = "frozen"
-    chilled = "chilled"
-
-
-class RiskStatusDB(enum.Enum):
-    GREEN = "green"
-    YELLOW = "yellow"
-    RED = "red"
-
-
-class Product(Base):
-    __tablename__ = 'products'
-    
-    id = Column(Integer, primary_key=True)
-    key = Column(String(100), unique=True, nullable=False)
-    name_pt = Column(String(200), nullable=False)
-    name_it = Column(String(200), nullable=False)
-    name_en = Column(String(200))
-    
-    ncm_code = Column(String(8), nullable=False)
-    hs_code = Column(String(6), nullable=False)
-    taric_code = Column(String(10))
-    
-    direction = Column(SQLEnum(TradeDirectionDB), nullable=False)
-    state = Column(SQLEnum(ProductStateDB), nullable=False)
-    category = Column(String(50))
-    
-    shelf_life_days = Column(Integer)
-    transport_days_avg = Column(Integer)
-    temperature_min_c = Column(Float)
-    temperature_max_c = Column(Float)
-    
-    requires_phytosanitary_cert = Column(Boolean, default=True)
-    requires_health_cert = Column(Boolean, default=False)
-    requires_origin_cert = Column(Boolean, default=True)
-    
-    # ⭐ NOVOS CAMPOS PARA SOBERANIA DE DADOS DYAD
-    risk_factors = Column(JSON)
-    compliance_alerts = Column(JSON)
-    technical_specs = Column(JSON)
-    dyad_last_sync = Column(DateTime)
-    dyad_data_quality = Column(JSON)
-    
-    critical_substances = Column(JSON)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
-    risk_assessments = relationship("RiskAssessment", back_populates="product")
-    lmr_data = relationship("LMRData", back_populates="product")
-
-
-class LMRData(Base):
-    __tablename__ = 'lmr_data'
-    
-    id = Column(Integer, primary_key=True)
-    product_id = Column(Integer, ForeignKey('products.id'), nullable=False)
-    
-    substance = Column(String(200), nullable=False)
-    source_lmr = Column(Float)
-    dest_lmr = Column(Float)
-    detection_rate = Column(Float)
-    
-    source_authority = Column(String(50))
-    regulatory_source = Column(String(500))
-    last_updated = Column(DateTime, default=datetime.utcnow)
-    
-    product = relationship("Product", back_populates="lmr_data")
-
-
-class RiskAssessment(Base):
-    __tablename__ = 'risk_assessments'
-    
-    id = Column(Integer, primary_key=True)
-    product_id = Column(Integer, ForeignKey('products.id'), nullable=False)
-    
-    final_score = Column(Float, nullable=False)
-    status = Column(SQLEnum(RiskStatusDB), nullable=False)
-    
-    rasff_score = Column(Float)
-    lmr_score = Column(Float)
-    phyto_score = Column(Float)
-    logistic_score = Column(Float)
-    penalty = Column(Float)
-    
-    rasff_alerts_6m = Column(Integer, default=0)
-    rasff_alerts_12m = Column(Integer, default=0)
-    
-    recommendations = Column(JSON)
-    calculation_timestamp = Column(DateTime, default=datetime.utcnow)
-    
-    # ⭐ Rastreabilidade da fonte
-    data_source = Column(String(50))
-    dyad_metadata = Column(JSON)
-    
-    product = relationship("Product", back_populates="risk_assessments")
-
-
-class NotificationLog(Base):
-    __tablename__ = 'notification_logs'
-    
-    id = Column(Integer, primary_key=True)
-    user_email = Column(String(200), nullable=False)
-    product_key = Column(String(100), nullable=False)
-    risk_score = Column(Float)
-    notification_type = Column(String(50))
-    sent_at = Column(DateTime, default=datetime.utcnow)
-    success = Column(Boolean, default=True)
-    error_message = Column(String(500))
-
-
-class User(Base):
-    __tablename__ = 'users'
-    
-    id = Column(Integer, primary_key=True)
-    email = Column(String(200), unique=True, nullable=False)
-    hashed_password = Column(String(200), nullable=False)
-    full_name = Column(String(200))
-    company = Column(String(200))
-    is_admin = Column(Boolean, default=False)
-    is_active = Column(Boolean, default=True)
-    
-    notification_threshold = Column(Float, default=65.0)
-    email_notifications = Column(Boolean, default=True)
-    
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-
-# ==================================================================================
-# CONFIGURAÇÃO DO BANCO COM AUTO-MIGRAÇÃO
-# ==================================================================================
-
-DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://zoi_user:IN3LI5N6OshhlVIDetxmCXhX01es3nK8@dpg-d5pkoeer433s73ddm970-a/zoi_db")
-
-if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-
-engine = create_engine(
-    DATABASE_URL,
-    pool_pre_ping=True,
-    pool_recycle=3600,
-    pool_size=5,
-    max_overflow=10
-)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-
-def migrate_database():
-    """
-    🔧 MIGRAÇÃO AUTOMÁTICA DO BANCO DE DADOS
-    
-    Adiciona as novas colunas necessárias para Data Sovereignty
-    sem quebrar o sistema existente.
-    """
-    logger.info("🔧 Verificando necessidade de migração do banco de dados...")
-    
-    inspector = inspect(engine)
-    
-    # Verificar se as novas colunas existem
-    products_columns = [col['name'] for col in inspector.get_columns('products')]
-    risk_assessments_columns = [col['name'] for col in inspector.get_columns('risk_assessments')]
-    lmr_data_columns = [col['name'] for col in inspector.get_columns('lmr_data')]
-    
-    migrations_needed = []
-    
-    # Verificar colunas em products
-    if 'risk_factors' not in products_columns:
-        migrations_needed.append("ALTER TABLE products ADD COLUMN risk_factors JSON")
-    if 'compliance_alerts' not in products_columns:
-        migrations_needed.append("ALTER TABLE products ADD COLUMN compliance_alerts JSON")
-    if 'technical_specs' not in products_columns:
-        migrations_needed.append("ALTER TABLE products ADD COLUMN technical_specs JSON")
-    if 'dyad_last_sync' not in products_columns:
-        migrations_needed.append("ALTER TABLE products ADD COLUMN dyad_last_sync TIMESTAMP")
-    if 'dyad_data_quality' not in products_columns:
-        migrations_needed.append("ALTER TABLE products ADD COLUMN dyad_data_quality JSON")
-    
-    # Verificar colunas em risk_assessments
-    if 'data_source' not in risk_assessments_columns:
-        migrations_needed.append("ALTER TABLE risk_assessments ADD COLUMN data_source VARCHAR(50)")
-    if 'dyad_metadata' not in risk_assessments_columns:
-        migrations_needed.append("ALTER TABLE risk_assessments ADD COLUMN dyad_metadata JSON")
-    
-    # Verificar colunas em lmr_data
-    if 'regulatory_source' not in lmr_data_columns:
-        migrations_needed.append("ALTER TABLE lmr_data ADD COLUMN regulatory_source VARCHAR(500)")
-    
-    if migrations_needed:
-        logger.info(f"🔧 {len(migrations_needed)} migrações necessárias. Executando...")
-        
-        from sqlalchemy import text
-        
-        with engine.connect() as conn:
-            for migration_sql in migrations_needed:
-                try:
-                    logger.info(f"   Executando: {migration_sql}")
-                    conn.execute(text(migration_sql))
-                    conn.commit()
-                    logger.info(f"   ✅ Sucesso")
-                except Exception as e:
-                    logger.warning(f"   ⚠️ Migração já aplicada ou erro: {e}")
-        
-        logger.info("✅ Migrações concluídas com sucesso!")
-    else:
-        logger.info("✅ Banco de dados já está atualizado. Nenhuma migração necessária.")
-
-
-# ==================================================================================
-# CALCULADORA DE RISCO
-# ==================================================================================
-
-class EnhancedRiskCalculator:
-    """Calculadora que PRIORIZA dados da Dyad AI"""
-    
-    def calculate_from_dyad(self, dyad_data: Dict[str, Any]) -> dict:
-        """Calcula risco usando dados da Dyad"""
-        risk_score = dyad_data.get('risk_score', 75.0)
-        risk_status = dyad_data.get('risk_status', 'yellow')
-        
-        status_labels = {
-            'green': 'Baixo Risco',
-            'yellow': 'Risco Moderado',
-            'red': 'Alto Risco'
+        payload = {
+            "prompt": prompt,
+            "max_tokens": 4000,
+            "temperature": 0.3
         }
         
-        rasff_alerts = dyad_data.get('rasff_alerts', {})
-        
-        return {
-            "score": risk_score,
-            "status": risk_status,
-            "status_label": status_labels.get(risk_status, 'Risco Moderado'),
-            "components": {
-                "Sanitário": risk_score * 0.35,
-                "Fitossanitário": risk_score * 0.30,
-                "Logístico": risk_score * 0.20,
-                "Documental": risk_score * 0.15
-            },
-            "recommendations": dyad_data.get('recommendations', []),
-            "alerts": {
-                "rasff_6m": rasff_alerts.get('last_6_months', 0),
-                "rasff_12m": rasff_alerts.get('last_12_months', 0),
-                "historical_rejections": 0
-            },
-            "risk_factors": dyad_data.get('risk_factors', []),
-            "compliance_alerts": dyad_data.get('compliance_alerts', []),
-            "technical_specs": dyad_data.get('technical_specs', []),
-            "data_source": "dyad_ai"
+        headers = {
+            "Authorization": f"Bearer {self.dyad_api_key}",
+            "Content-Type": "application/json"
         }
+        
+        logger.info("📡 Sending request to Dyad AI...")
+        start_time = datetime.now()
+        
+        response = requests.post(
+            self.dyad_api_url,
+            json=payload,
+            headers=headers,
+            timeout=120
+        )
+        
+        elapsed = (datetime.now() - start_time).total_seconds()
+        logger.info(f"⏱️ Dyad AI response time: {elapsed:.1f}s")
+        
+        if response.status_code != 200:
+            logger.error(f"❌ Dyad AI error: {response.status_code}")
+            return None
+        
+        data = response.json()
+        result_text = data.get('result', data.get('response', ''))
+        
+        try:
+            if '```json' in result_text:
+                result_text = result_text.split('```json')[1].split('```')[0]
+            elif '```' in result_text:
+                result_text = result_text.split('```')[1].split('```')[0]
+            
+            parsed = json.loads(result_text.strip())
+            logger.info("✅ Dyad AI research completed successfully")
+            return parsed
+        
+        except json.JSONDecodeError as e:
+            logger.error(f"❌ Failed to parse Dyad AI JSON: {e}")
+            return None
 
+# ══════════════════════════════════════════════════════════════════════════════
+# CACHE MANAGER (24-HOUR STRATEGY)
+# ══════════════════════════════════════════════════════════════════════════════
 
-# ==================================================================================
-# GERADOR DE PDF
-# ==================================================================================
-
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import mm
-from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_CENTER, TA_LEFT
-
-
-class ZOISentinelReportGenerator:
-    """Gerador de PDF sincronizado com o aplicativo"""
+class CacheManager:
+    """
+    ⏰ 24-HOUR CACHE STRATEGY
     
-    def _format_list_field(self, data: Union[List[str], str, None]) -> List[str]:
-        """Formata campos para lista consistente"""
-        if not data:
-            return []
-        
-        if isinstance(data, list):
-            return [str(item) for item in data if item]
-        
-        if isinstance(data, str):
-            if '\n' in data:
-                return [line.strip() for line in data.split('\n') if line.strip()]
-            elif len(data) > 200:
-                sentences = re.split(r'[.!?]+', data)
-                return [s.strip() for s in sentences if s.strip()]
-            else:
-                return [data]
-        
-        return []
+    Database serves ONLY as a 24-hour cache.
+    If data is older than 24 hours, MUST trigger new AI search.
+    """
     
-    def generate_risk_pdf(self, product_data: dict, risk_data: dict, dyad_data: Optional[dict] = None) -> BytesIO:
-        """Gera PDF com dados do aplicativo"""
+    @staticmethod
+    def is_cache_valid(product: Product) -> bool:
+        """Check if cached AI data is still valid (< 24 hours)"""
+        
+        if not product.ai_last_check:
+            logger.info(f"❌ No cached data for {product.key}")
+            return False
+        
+        age = datetime.utcnow() - product.ai_last_check
+        valid = age < timedelta(hours=24)
+        
+        if valid:
+            logger.info(f"✅ Cache valid for {product.key} (age: {age.total_seconds()/3600:.1f}h)")
+        else:
+            logger.info(f"⏰ Cache expired for {product.key} (age: {age.total_seconds()/3600:.1f}h)")
+        
+        return valid
+    
+    @staticmethod
+    def save_ai_results(product: Product, ai_data: Dict, db) -> None:
+        """Save AI research results to cache"""
+        
+        try:
+            product.ai_last_check = datetime.utcnow()
+            product.ai_raw_response = ai_data
+            product.ai_status = ai_data.get('status', 'yellow')
+            product.ai_score = ai_data.get('score', 50.0)
+            product.ai_risk_factors = ai_data.get('risk_factors', [])
+            product.ai_compliance_alerts = ai_data.get('compliance_alerts', [])
+            product.ai_technical_specs = ai_data.get('technical_specs', [])
+            product.ai_barriers = ai_data.get('barriers', {})
+            product.ai_documents_required = ai_data.get('documents_required', [])
+            product.ai_estimated_costs = ai_data.get('estimated_costs', {})
+            
+            db.commit()
+            logger.info(f"💾 AI results cached for {product.key}")
+        
+        except Exception as e:
+            logger.error(f"❌ Failed to save cache: {e}")
+            db.rollback()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PDF GENERATOR - BUSINESS CLASS DESIGN
+# ══════════════════════════════════════════════════════════════════════════════
+
+class BusinessClassPDFGenerator:
+    """
+    📄 PREMIUM PDF REPORT GENERATOR
+    
+    Business-class design with:
+    - Professional header
+    - Real-time verification seal
+    - Clean tables and sections
+    - Executive summary format
+    """
+    
+    def __init__(self):
+        self.pagesize = A4
+        self.width, self.height = self.pagesize
+    
+    def _add_header(self, canvas_obj, doc):
+        """Add professional header to each page"""
+        canvas_obj.saveState()
+        
+        # Header background
+        canvas_obj.setFillColorRGB(0.1, 0.2, 0.35)  # Dark blue
+        canvas_obj.rect(0, self.height - 2*cm, self.width, 2*cm, fill=True, stroke=False)
+        
+        # ZOI Logo text
+        canvas_obj.setFillColorRGB(1, 1, 1)  # White
+        canvas_obj.setFont("Helvetica-Bold", 20)
+        canvas_obj.drawString(2*cm, self.height - 1.3*cm, "ZOI")
+        
+        canvas_obj.setFont("Helvetica", 10)
+        canvas_obj.drawString(2*cm, self.height - 1.7*cm, "Strategic Advisory")
+        
+        # Document title
+        canvas_obj.setFont("Helvetica-Bold", 14)
+        canvas_obj.drawRightString(
+            self.width - 2*cm,
+            self.height - 1.5*cm,
+            "Dossier de Inteligência de Mercado"
+        )
+        
+        canvas_obj.restoreState()
+    
+    def _add_footer(self, canvas_obj, doc):
+        """Add footer with page numbers"""
+        canvas_obj.saveState()
+        
+        canvas_obj.setFont("Helvetica", 8)
+        canvas_obj.setFillColorRGB(0.5, 0.5, 0.5)
+        
+        footer_text = f"ZOI Sentinel © {datetime.now().year} | Página {doc.page}"
+        canvas_obj.drawCentredString(
+            self.width / 2,
+            1*cm,
+            footer_text
+        )
+        
+        canvas_obj.restoreState()
+    
+    def generate_dossier(
+        self,
+        product_data: Dict,
+        ai_data: Dict,
+        verification_time: datetime
+    ) -> BytesIO:
+        """
+        Generate premium PDF dossier
+        
+        Args:
+            product_data: Product information
+            ai_data: AI research results
+            verification_time: Timestamp of AI verification
+        
+        Returns:
+            BytesIO buffer with PDF
+        """
+        
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=15*mm, bottomMargin=15*mm)
-        styles = getSampleStyleSheet()
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=self.pagesize,
+            rightMargin=2*cm,
+            leftMargin=2*cm,
+            topMargin=3*cm,
+            bottomMargin=2.5*cm
+        )
+        
+        # Story (PDF content)
         story = []
+        
+        # Styles
+        styles = getSampleStyleSheet()
         
         title_style = ParagraphStyle(
             'CustomTitle',
             parent=styles['Heading1'],
-            fontSize=18,
-            textColor=colors.HexColor('#1a365d'),
-            spaceAfter=12,
+            fontSize=24,
+            textColor=colors.HexColor('#1a3352'),
+            spaceAfter=30,
             alignment=TA_CENTER,
             fontName='Helvetica-Bold'
         )
         
-        section_style = ParagraphStyle(
-            'SectionTitle',
+        heading_style = ParagraphStyle(
+            'CustomHeading',
             parent=styles['Heading2'],
             fontSize=14,
-            textColor=colors.HexColor('#2d3748'),
-            spaceAfter=8,
-            spaceBefore=12,
+            textColor=colors.HexColor('#1a3352'),
+            spaceAfter=12,
+            spaceBefore=20,
             fontName='Helvetica-Bold'
         )
         
-        # Cabeçalho
-        story.append(Paragraph("🛡️ ZOI SENTINEL", title_style))
-        story.append(Paragraph("Relatório de Inteligência de Compliance", styles['Heading3']))
-        
-        # Fonte de dados
-        data_source = risk_data.get('data_source', 'unknown')
-        if data_source == 'dyad_ai':
-            source_text = "📡 <b>Dados em Tempo Real - Dyad AI</b>"
-            source_color = colors.HexColor('#38a169')
-        else:
-            source_text = "📂 <b>Dados do Banco de Dados</b>"
-            source_color = colors.HexColor('#d69e2e')
-        
-        source_style = ParagraphStyle(
-            'SourceStyle',
-            parent=styles['Normal'],
+        body_style = ParagraphStyle(
+            'CustomBody',
+            parent=styles['BodyText'],
             fontSize=10,
-            textColor=source_color,
+            leading=14,
+            alignment=TA_JUSTIFY
+        )
+        
+        # ═══════════════════════════════════════════════════════════════
+        # COVER PAGE
+        # ═══════════════════════════════════════════════════════════════
+        
+        # Title
+        story.append(Spacer(1, 1*cm))
+        story.append(Paragraph(
+            "Dossier de Inteligência de Mercado",
+            title_style
+        ))
+        
+        # Verification Seal
+        seal_style = ParagraphStyle(
+            'Seal',
+            parent=body_style,
+            fontSize=11,
+            textColor=colors.HexColor('#d97706'),
             alignment=TA_CENTER,
             fontName='Helvetica-Bold'
         )
-        story.append(Paragraph(source_text, source_style))
-        story.append(Spacer(1, 8*mm))
         
-        # Informações do produto
-        story.append(Paragraph("INFORMAÇÕES DO PRODUTO", section_style))
+        verification_text = f"""
+        ⚠️ VERIFICADO EM TEMPO REAL VIA AGENTE IA<br/>
+        {verification_time.strftime('%d/%m/%Y às %H:%M:%S')} UTC
+        """
         
-        product_info = [
-            ['Campo', 'Valor'],
-            ['Produto', product_data.get('name_pt', 'N/A')],
-            ['Nome Italiano', product_data.get('name_it', 'N/A')],
-            ['Código NCM', product_data.get('ncm_code', 'N/A')],
-            ['Direção', product_data.get('direction', 'N/A').upper()],
-            ['Estado', product_data.get('state', 'N/A').capitalize()],
+        story.append(Spacer(1, 0.5*cm))
+        story.append(Paragraph(verification_text, seal_style))
+        story.append(Spacer(1, 1*cm))
+        
+        # Product Information Box
+        product_info_data = [
+            ['PRODUTO', product_data.get('name_pt', 'N/A')],
+            ['NOME ITALIANO', product_data.get('name_it', 'N/A')],
+            ['CÓDIGO NCM', product_data.get('ncm_code', 'N/A')],
+            ['DIREÇÃO', product_data.get('direction', 'N/A').upper()],
         ]
         
-        product_table = Table(product_info, colWidths=[60*mm, 120*mm])
+        product_table = Table(product_info_data, colWidths=[6*cm, 10*cm])
         product_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e2e8f0')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.HexColor('#1a365d')),
-            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#1a3352')),
+            ('TEXTCOLOR', (0, 0), (0, -1), colors.whitesmoke),
+            ('BACKGROUND', (1, 0), (1, -1), colors.HexColor('#f3f4f6')),
+            ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+            ('PADDING', (0, 0), (-1, -1), 12),
             ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
         ]))
         
         story.append(product_table)
-        story.append(Spacer(1, 8*mm))
+        story.append(Spacer(1, 1*cm))
         
-        # Score de risco
-        story.append(Paragraph("AVALIAÇÃO DE RISCO", section_style))
-        
-        score = risk_data.get('score', 0)
-        status = risk_data.get('status', 'yellow')
+        # Risk Score (Big Number)
+        score = ai_data.get('score', 50)
+        status = ai_data.get('status', 'yellow')
         
         status_colors = {
-            'green': colors.HexColor('#38a169'),
-            'yellow': colors.HexColor('#d69e2e'),
-            'red': colors.HexColor('#e53e3e')
+            'green': colors.HexColor('#10b981'),
+            'yellow': colors.HexColor('#f59e0b'),
+            'red': colors.HexColor('#ef4444')
         }
         
-        risk_info = [
-            ['Métrica', 'Valor'],
-            ['Score Final', f"{score:.1f}/100"],
-            ['Status', risk_data.get('status_label', 'N/A')],
-        ]
-        
-        risk_table = Table(risk_info, colWidths=[60*mm, 120*mm])
-        risk_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e2e8f0')),
-            ('BACKGROUND', (0, 2), (-1, 2), status_colors.get(status, colors.yellow)),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.HexColor('#1a365d')),
-            ('TEXTCOLOR', (0, 2), (-1, 2), colors.white),
-            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTNAME', (0, 2), (1, 2), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 10),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-        ]))
-        
-        story.append(risk_table)
-        story.append(Spacer(1, 8*mm))
-        
-        # Fatores de Risco
-        risk_factors = self._format_list_field(risk_data.get('risk_factors', []))
-        if risk_factors:
-            story.append(Paragraph("⚠️ FATORES DE RISCO", section_style))
-            
-            for i, factor in enumerate(risk_factors[:10], 1):
-                factor_para = Paragraph(f"<b>{i}.</b> {factor}", styles['Normal'])
-                story.append(factor_para)
-                story.append(Spacer(1, 2*mm))
-            
-            story.append(Spacer(1, 5*mm))
-        
-        # Alertas de Compliance
-        compliance_alerts = self._format_list_field(risk_data.get('compliance_alerts', []))
-        if compliance_alerts:
-            story.append(Paragraph("📋 ALERTAS DE COMPLIANCE", section_style))
-            
-            for i, alert in enumerate(compliance_alerts[:10], 1):
-                alert_para = Paragraph(f"<b>{i}.</b> {alert}", styles['Normal'])
-                story.append(alert_para)
-                story.append(Spacer(1, 2*mm))
-            
-            story.append(Spacer(1, 5*mm))
-        
-        # Especificações Técnicas
-        technical_specs = self._format_list_field(risk_data.get('technical_specs', []))
-        if technical_specs:
-            story.append(Paragraph("🔬 ESPECIFICAÇÕES TÉCNICAS", section_style))
-            
-            for i, spec in enumerate(technical_specs[:10], 1):
-                spec_para = Paragraph(f"<b>{i}.</b> {spec}", styles['Normal'])
-                story.append(spec_para)
-                story.append(Spacer(1, 2*mm))
-            
-            story.append(Spacer(1, 5*mm))
-        
-        # Recomendações
-        recommendations = self._format_list_field(risk_data.get('recommendations', []))
-        if recommendations:
-            story.append(Paragraph("💡 RECOMENDAÇÕES", section_style))
-            
-            for i, rec in enumerate(recommendations[:8], 1):
-                rec_para = Paragraph(f"<b>{i}.</b> {rec}", styles['Normal'])
-                story.append(rec_para)
-                story.append(Spacer(1, 2*mm))
-        
-        # Rodapé
-        story.append(Spacer(1, 10*mm))
-        footer_style = ParagraphStyle(
-            'Footer',
-            parent=styles['Normal'],
-            fontSize=8,
-            textColor=colors.grey,
-            alignment=TA_CENTER
+        score_style = ParagraphStyle(
+            'Score',
+            parent=body_style,
+            fontSize=48,
+            textColor=status_colors.get(status, colors.grey),
+            alignment=TA_CENTER,
+            fontName='Helvetica-Bold'
         )
         
-        timestamp = datetime.now().strftime('%d/%m/%Y às %H:%M:%S')
+        story.append(Paragraph(f"{score:.1f}", score_style))
+        
+        score_label_style = ParagraphStyle(
+            'ScoreLabel',
+            parent=body_style,
+            fontSize=12,
+            alignment=TA_CENTER,
+            textColor=colors.grey
+        )
+        
+        status_labels = {
+            'green': 'BAIXO RISCO',
+            'yellow': 'RISCO MODERADO',
+            'red': 'ALTO RISCO'
+        }
+        
         story.append(Paragraph(
-            f"Relatório gerado em {timestamp} | ZOI Sentinel © 2026",
-            footer_style
+            status_labels.get(status, 'RISCO MODERADO'),
+            score_label_style
         ))
         
-        doc.build(story)
+        story.append(PageBreak())
+        
+        # ═══════════════════════════════════════════════════════════════
+        # SECTION 1: FATORES DE RISCO
+        # ═══════════════════════════════════════════════════════════════
+        
+        story.append(Paragraph("1. Fatores de Risco Identificados", heading_style))
+        story.append(Spacer(1, 0.3*cm))
+        
+        risk_factors = ai_data.get('risk_factors', [])
+        
+        if risk_factors:
+            for i, factor in enumerate(risk_factors, 1):
+                story.append(Paragraph(f"• {factor}", body_style))
+                story.append(Spacer(1, 0.2*cm))
+        else:
+            story.append(Paragraph(
+                "Nenhum fator de risco crítico identificado.",
+                body_style
+            ))
+        
+        story.append(Spacer(1, 0.5*cm))
+        
+        # ═══════════════════════════════════════════════════════════════
+        # SECTION 2: BARREIRAS SANITÁRIAS E FITOSSANITÁRIAS
+        # ═══════════════════════════════════════════════════════════════
+        
+        story.append(Paragraph("2. Barreiras Sanitárias e Fitossanitárias", heading_style))
+        story.append(Spacer(1, 0.3*cm))
+        
+        barriers = ai_data.get('barriers', {})
+        
+        # Sanitary Barriers
+        if barriers.get('sanitary'):
+            story.append(Paragraph("<b>Barreiras Sanitárias:</b>", body_style))
+            for barrier in barriers['sanitary']:
+                story.append(Paragraph(f"• {barrier}", body_style))
+            story.append(Spacer(1, 0.3*cm))
+        
+        # Phytosanitary Barriers
+        if barriers.get('phytosanitary'):
+            story.append(Paragraph("<b>Barreiras Fitossanitárias:</b>", body_style))
+            for barrier in barriers['phytosanitary']:
+                story.append(Paragraph(f"• {barrier}", body_style))
+            story.append(Spacer(1, 0.3*cm))
+        
+        # Documentary Requirements
+        if barriers.get('documentary'):
+            story.append(Paragraph("<b>Requisitos Documentais:</b>", body_style))
+            for req in barriers['documentary']:
+                story.append(Paragraph(f"• {req}", body_style))
+            story.append(Spacer(1, 0.3*cm))
+        
+        story.append(Spacer(1, 0.5*cm))
+        
+        # ═══════════════════════════════════════════════════════════════
+        # SECTION 3: DOCUMENTAÇÃO OBRIGATÓRIA
+        # ═══════════════════════════════════════════════════════════════
+        
+        story.append(Paragraph("3. Documentação Obrigatória", heading_style))
+        story.append(Spacer(1, 0.3*cm))
+        
+        documents = ai_data.get('documents_required', [])
+        
+        if documents:
+            doc_data = [['Documento', 'Órgão Emissor', 'Validade']]
+            
+            for doc in documents:
+                doc_data.append([
+                    doc.get('name', 'N/A'),
+                    doc.get('issuer', 'N/A'),
+                    doc.get('validity', 'N/A')
+                ])
+            
+            doc_table = Table(doc_data, colWidths=[6*cm, 6*cm, 4*cm])
+            doc_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1a3352')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, -1), 9),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#f9fafb')),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                ('PADDING', (0, 0), (-1, -1), 8),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ]))
+            
+            story.append(doc_table)
+        else:
+            story.append(Paragraph(
+                "Informação não disponível no momento.",
+                body_style
+            ))
+        
+        story.append(Spacer(1, 0.5*cm))
+        
+        # ═══════════════════════════════════════════════════════════════
+        # SECTION 4: CUSTOS ESTIMADOS (LANDING COST)
+        # ═══════════════════════════════════════════════════════════════
+        
+        story.append(Paragraph("4. Custos Estimados (Landing Cost)", heading_style))
+        story.append(Spacer(1, 0.3*cm))
+        
+        costs = ai_data.get('estimated_costs', {})
+        
+        if costs:
+            cost_data = [['Item', 'Valor Estimado']]
+            
+            cost_items = {
+                'certifications': 'Certificações',
+                'inspections': 'Inspeções',
+                'documentation': 'Documentação',
+                'total_landing_cost_estimate': 'TOTAL ESTIMADO'
+            }
+            
+            for key, label in cost_items.items():
+                value = costs.get(key, 'N/A')
+                if key == 'total_landing_cost_estimate':
+                    cost_data.append([f"<b>{label}</b>", f"<b>{value}</b>"])
+                else:
+                    cost_data.append([label, value])
+            
+            cost_table = Table(cost_data, colWidths=[10*cm, 6*cm])
+            cost_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1a3352')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, -1), 10),
+                ('BACKGROUND', (0, 1), (-1, -2), colors.HexColor('#f9fafb')),
+                ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#fef3c7')),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                ('PADDING', (0, 0), (-1, -1), 10),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ]))
+            
+            story.append(cost_table)
+        else:
+            story.append(Paragraph(
+                "Estimativa de custos não disponível.",
+                body_style
+            ))
+        
+        story.append(Spacer(1, 0.5*cm))
+        
+        # ═══════════════════════════════════════════════════════════════
+        # SECTION 5: ALERTAS DE COMPLIANCE
+        # ═══════════════════════════════════════════════════════════════
+        
+        story.append(Paragraph("5. Alertas de Compliance", heading_style))
+        story.append(Spacer(1, 0.3*cm))
+        
+        alerts = ai_data.get('compliance_alerts', [])
+        
+        if alerts:
+            for alert in alerts:
+                story.append(Paragraph(f"⚠️ {alert}", body_style))
+                story.append(Spacer(1, 0.2*cm))
+        else:
+            story.append(Paragraph(
+                "Nenhum alerta crítico no momento.",
+                body_style
+            ))
+        
+        story.append(Spacer(1, 0.5*cm))
+        
+        # ═══════════════════════════════════════════════════════════════
+        # SECTION 6: ESPECIFICAÇÕES TÉCNICAS
+        # ═══════════════════════════════════════════════════════════════
+        
+        story.append(Paragraph("6. Especificações Técnicas", heading_style))
+        story.append(Spacer(1, 0.3*cm))
+        
+        specs = ai_data.get('technical_specs', [])
+        
+        if specs:
+            for spec in specs:
+                story.append(Paragraph(f"• {spec}", body_style))
+                story.append(Spacer(1, 0.2*cm))
+        else:
+            story.append(Paragraph(
+                "Especificações técnicas não disponíveis.",
+                body_style
+            ))
+        
+        # ═══════════════════════════════════════════════════════════════
+        # FOOTER / DISCLAIMER
+        # ═══════════════════════════════════════════════════════════════
+        
+        story.append(PageBreak())
+        
+        disclaimer_style = ParagraphStyle(
+            'Disclaimer',
+            parent=body_style,
+            fontSize=8,
+            textColor=colors.grey,
+            alignment=TA_JUSTIFY
+        )
+        
+        disclaimer_text = f"""
+        <b>AVISO LEGAL</b><br/><br/>
+        Este dossier foi gerado em {verification_time.strftime('%d/%m/%Y às %H:%M:%S')} UTC 
+        por meio de pesquisa em tempo real realizada por Agente de Inteligência Artificial nos 
+        principais portais regulatórios brasileiros (MAPA, ANVISA, Siscomex).<br/><br/>
+        
+        As informações aqui contidas refletem o estado regulatório vigente no momento da consulta 
+        e devem ser utilizadas como referência estratégica. Recomenda-se verificação adicional 
+        junto aos órgãos competentes antes de decisões comerciais definitivas.<br/><br/>
+        
+        <b>ZOI Strategic Advisory</b> | Sistema ZOI Sentinel v4.0 - Living Intelligence Architecture
+        """
+        
+        story.append(Paragraph(disclaimer_text, disclaimer_style))
+        
+        # Build PDF
+        doc.build(
+            story,
+            onFirstPage=self._add_header,
+            onLaterPages=self._add_header
+        )
+        
         buffer.seek(0)
         return buffer
 
+# ══════════════════════════════════════════════════════════════════════════════
+# FASTAPI APPLICATION
+# ══════════════════════════════════════════════════════════════════════════════
 
-# ==================================================================================
-# FASTAPI
-# ==================================================================================
-
-app = FastAPI(title="ZOI Sentinel API", version="3.0")
+app = FastAPI(
+    title="ZOI Sentinel v4.0",
+    description="Living Intelligence System - Zero Database Architecture",
+    version="4.0.0"
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -817,106 +911,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-SECRET_KEY = os.environ.get("SECRET_KEY", "zoi_sentinel_secret_2026")
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 10080
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-
-
-# ==================================================================================
-# PYDANTIC MODELS
-# ==================================================================================
-
-class TradeDirection(str, enum.Enum):
-    EXPORT = "export"
-    IMPORT = "import"
-
-
-class ProductState(str, enum.Enum):
-    ambient = "ambient"
-    frozen = "frozen"
-    chilled = "chilled"
-
-
-class UserCreate(BaseModel):
-    email: EmailStr
-    password: str
-    full_name: Optional[str] = None
-    company: Optional[str] = None
-
-
-
-class RiskCalculationRequest(BaseModel):
-    product_key: str
-    rasff_alerts_6m: int = 0
-    rasff_alerts_12m: int = 0
-    lmr_data: List[dict] = []
-    phyto_alerts: List[dict] = []
-    transport_days: Optional[int] = None
-
-
-class TraditionalRiskCalculator:
-    """Calculadora de risco tradicional (sem Dyad AI)"""
-    
-    def calculate(self, product, rasff_6m: int, rasff_12m: int) -> dict:
-        profile = NCM_RISK_PROFILES.get(product.ncm_code, {
-            "sanitario_base": 85.0,
-            "fitossanitario_base": 80.0,
-            "logistico_base": 85.0,
-            "documental_base": 80.0,
-            "historical_rejections": 0
-        })
-        
-        sanitario = max(0, profile['sanitario_base'] - (rasff_6m * 10) - (rasff_12m * 4))
-        fitossanitario = profile['fitossanitario_base']
-        logistico = profile['logistico_base']
-        documental = profile['documental_base']
-        
-        final_score = (sanitario * 0.35 + fitossanitario * 0.30 + logistico * 0.20 + documental * 0.15)
-        
-        if final_score >= 80:
-            status, label = "green", "Baixo Risco"
-        elif final_score >= 60:
-            status, label = "yellow", "Risco Moderado"
-        else:
-            status, label = "red", "Alto Risco"
-        
-        recommendations = []
-        if sanitario < 75:
-            recommendations.append("Reforçar controles sanitários e rastreabilidade")
-        if fitossanitario < 75:
-            recommendations.append("Auditar uso de agrotóxicos e conformidade com LMRs")
-        
-        return {
-            "score": final_score,
-            "status": status,
-            "status_label": label,
-            "components": {
-                "Sanitário": sanitario,
-                "Fitossanitário": fitossanitario,
-                "Logístico": logistico,
-                "Documental": documental
-            },
-            "recommendations": recommendations,
-            "alerts": {
-                "rasff_6m": rasff_6m,
-                "rasff_12m": rasff_12m,
-                "historical_rejections": profile.get("historical_rejections", 0)
-            }
-        }
-
-
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-
-
-# ==================================================================================
-# DEPENDÊNCIAS
-# ==================================================================================
-
+# Dependency
 def get_db():
     db = SessionLocal()
     try:
@@ -924,756 +919,308 @@ def get_db():
     finally:
         db.close()
 
+# Initialize AI Agent
+try:
+    ai_agent = ManusAIResearchAgent()
+except ValueError as e:
+    logger.error(f"Failed to initialize AI agent: {e}")
+    ai_agent = None
 
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
-
-
-def get_password_hash(password: str) -> str:
-    return pwd_context.hash(password)
-
-
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
-
-
-# ==================================================================================
-# 🎯 FUNÇÃO PRINCIPAL: GET_PRODUCT_ANALYSIS
-# ==================================================================================
-
-def get_product_analysis(product_key: str, db: SessionLocal, force_refresh: bool = False) -> Dict[str, Any]:
-    """
-    🎯 FUNÇÃO CENTRAL DE SOBERANIA DE DADOS
-    
-    REGRAS:
-    1. SEMPRE chama Dyad AI se houver NCM válido
-    2. Salva dados da IA no banco IMEDIATAMENTE
-    3. Sobrescreve dados antigos
-    4. Fallback para banco se Dyad falhar
-    """
-    
-    logger.info(f"\n{'='*80}")
-    logger.info(f"🎯 GET_PRODUCT_ANALYSIS - Produto: {product_key}")
-    logger.info(f"{'='*80}")
-    
-    # 1. Buscar produto
-    product = db.query(Product).filter(Product.key == product_key).first()
-    if not product:
-        logger.error(f"❌ Produto {product_key} não encontrado")
-        raise HTTPException(status_code=404, detail="Product not found")
-    
-    logger.info(f"✅ Produto encontrado: {product.name_pt}")
-    
-    # 2. ⚠️ VALIDAÇÃO CRÍTICA DE NCM
-    if not product.ncm_code or product.ncm_code.strip() == "":
-        logger.error(f"❌ ERRO CRÍTICO: Lovable não enviou o NCM para o produto '{product.name_pt}' (key: {product_key})")
-        logger.error(f"⚠️ AÇÃO NECESSÁRIA: Verificar integração com frontend Lovable")
-        
-        return {
-            "product": {
-                "id": product.id,
-                "key": product.key,
-                "name_pt": product.name_pt,
-                "name_it": product.name_it,
-                "ncm_code": "ERRO: NCM NÃO FORNECIDO",
-                "hs_code": product.hs_code,
-                "direction": product.direction.value,
-                "state": product.state.value
-            },
-            "risk_analysis": {
-                "score": 50.0,
-                "status": "yellow",
-                "status_label": "ERRO: Análise Impossível (NCM ausente)",
-                "risk_factors": ["ERRO CRÍTICO: NCM não fornecido pelo frontend"],
-                "compliance_alerts": ["Impossível analisar compliance sem código NCM"],
-                "technical_specs": [],
-                "data_source": "error"
-            },
-            "error": "NCM não fornecido"
-        }
-    
-    logger.info(f"✅ NCM válido: {product.ncm_code}")
-    
-    # 3. Verificar necessidade de refresh
-    should_refresh = force_refresh
-    
-    if not force_refresh and hasattr(product, 'dyad_last_sync') and product.dyad_last_sync:
-        time_since_sync = datetime.utcnow() - product.dyad_last_sync
-        should_refresh = time_since_sync > timedelta(hours=24)
-        
-        if not should_refresh:
-            logger.info(f"📂 Dados recentes (sync: {product.dyad_last_sync})")
-    else:
-        should_refresh = True
-        logger.info(f"🔄 Primeira sincronização ou forçada")
-    
-    # 4. 🧠 BUSCAR DADOS NA DYAD AI
-    dyad_data = None
-    if should_refresh:
-        logger.info(f"🧠 Iniciando busca Dyad AI (Data Sovereignty)")
-        
-        dyad = DyadComplianceNavigator()
-        dyad_data = dyad.get_compliance_intelligence(
-            ncm_code=product.ncm_code,
-            product_name=product.name_pt,
-            target_market="EU"
-        )
-        
-        if dyad_data:
-            logger.info(f"✅ SOBERANIA: Dados obtidos da Dyad AI")
-            
-            # 5. 💾 SALVAR DADOS NO BANCO
-            try:
-                logger.info(f"💾 Salvando dados (sobrescrevendo antigos)...")
-                
-                # Atualizar campos (verificar se existem)
-                if hasattr(product, 'risk_factors'):
-                    product.risk_factors = dyad_data.get('risk_factors', [])
-                if hasattr(product, 'compliance_alerts'):
-                    product.compliance_alerts = dyad_data.get('compliance_alerts', [])
-                if hasattr(product, 'technical_specs'):
-                    product.technical_specs = dyad_data.get('technical_specs', [])
-                if hasattr(product, 'dyad_last_sync'):
-                    product.dyad_last_sync = datetime.utcnow()
-                if hasattr(product, 'dyad_data_quality'):
-                    product.dyad_data_quality = dyad_data.get('data_quality', {})
-                
-                # Atualizar certificações
-                certs = dyad_data.get('certifications', {})
-                if certs:
-                    product.requires_phytosanitary_cert = certs.get('phytosanitary', True)
-                    product.requires_health_cert = certs.get('health', False)
-                    product.requires_origin_cert = certs.get('origin', True)
-                
-                # Salvar LMR data
-                lmr_list = dyad_data.get('lmr_data', [])
-                if lmr_list:
-                    logger.info(f"💾 Salvando {len(lmr_list)} substâncias LMR...")
-                    
-                    for lmr_item in lmr_list[:15]:
-                        substance = lmr_item.get('substance', '').strip()
-                        if not substance:
-                            continue
-                        
-                        existing = db.query(LMRData).filter(
-                            LMRData.product_id == product.id,
-                            LMRData.substance == substance
-                        ).first()
-                        
-                        eu_limit = lmr_item.get('eu_limit_mg_kg')
-                        br_limit = lmr_item.get('br_limit_mg_kg')
-                        
-                        if existing:
-                            if eu_limit is not None:
-                                existing.dest_lmr = float(eu_limit)
-                            if br_limit is not None:
-                                existing.source_lmr = float(br_limit)
-                            existing.source_authority = "Dyad AI"
-                            existing.last_updated = datetime.utcnow()
-                            logger.info(f"  ↻ Atualizado: {substance}")
-                        else:
-                            new_lmr = LMRData(
-                                product_id=product.id,
-                                substance=substance,
-                                dest_lmr=float(eu_limit) if eu_limit is not None else None,
-                                source_lmr=float(br_limit) if br_limit is not None else None,
-                                source_authority="Dyad AI"
-                            )
-                            if hasattr(new_lmr, 'regulatory_source'):
-                                new_lmr.regulatory_source = lmr_item.get('source', '')
-                            db.add(new_lmr)
-                            logger.info(f"  + Criado: {substance}")
-                
-                # Criar Risk Assessment
-                calc = EnhancedRiskCalculator()
-                risk_result = calc.calculate_from_dyad(dyad_data)
-                
-                rasff = dyad_data.get('rasff_alerts', {})
-                
-                assessment = RiskAssessment(
-                    product_id=product.id,
-                    final_score=risk_result['score'],
-                    status=RiskStatusDB(risk_result['status']),
-                    rasff_score=risk_result['components']['Sanitário'],
-                    lmr_score=risk_result['components']['Fitossanitário'],
-                    phyto_score=risk_result['components']['Fitossanitário'],
-                    logistic_score=risk_result['components']['Logístico'],
-                    penalty=100 - risk_result['score'],
-                    rasff_alerts_6m=rasff.get('last_6_months', 0),
-                    rasff_alerts_12m=rasff.get('last_12_months', 0),
-                    recommendations=risk_result['recommendations']
-                )
-                
-                if hasattr(assessment, 'data_source'):
-                    assessment.data_source = 'dyad_ai'
-                if hasattr(assessment, 'dyad_metadata'):
-                    assessment.dyad_metadata = dyad_data.get('_metadata', {})
-                
-                db.add(assessment)
-                db.commit()
-                db.refresh(product)
-                
-                logger.info(f"✅ SOBERANIA ESTABELECIDA: Dados salvos no banco")
-                
-            except Exception as e:
-                logger.error(f"❌ Erro ao salvar dados: {e}")
-                db.rollback()
-                import traceback
-                traceback.print_exc()
-        else:
-            logger.warning(f"⚠️ Dyad não retornou dados, usando fallback")
-    
-    # 6. MONTAR RESPOSTA
-    logger.info(f"📦 Montando resposta com dados do banco...")
-    
-    latest_assessment = db.query(RiskAssessment).filter(
-        RiskAssessment.product_id == product.id
-    ).order_by(RiskAssessment.calculation_timestamp.desc()).first()
-    
-    if latest_assessment:
-        # Buscar risk_factors, compliance_alerts, technical_specs
-        risk_factors = []
-        compliance_alerts = []
-        technical_specs = []
-        
-        if hasattr(product, 'risk_factors') and product.risk_factors:
-            risk_factors = product.risk_factors
-        if hasattr(product, 'compliance_alerts') and product.compliance_alerts:
-            compliance_alerts = product.compliance_alerts
-        if hasattr(product, 'technical_specs') and product.technical_specs:
-            technical_specs = product.technical_specs
-        
-        data_source = 'database'
-        if hasattr(latest_assessment, 'data_source') and latest_assessment.data_source:
-            data_source = latest_assessment.data_source
-        
-        last_updated = None
-        if hasattr(product, 'dyad_last_sync') and product.dyad_last_sync:
-            last_updated = product.dyad_last_sync.isoformat()
-        
-        risk_analysis = {
-            "score": float(latest_assessment.final_score),
-            "status": latest_assessment.status.value,
-            "status_label": {
-                'green': 'Baixo Risco',
-                'yellow': 'Risco Moderado',
-                'red': 'Alto Risco'
-            }.get(latest_assessment.status.value, 'Risco Moderado'),
-            "components": {
-                "Sanitário": float(latest_assessment.rasff_score or 0),
-                "Fitossanitário": float(latest_assessment.lmr_score or 0),
-                "Logístico": float(latest_assessment.logistic_score or 0),
-                "Documental": float(latest_assessment.penalty or 0)
-            },
-            "recommendations": latest_assessment.recommendations or [],
-            "alerts": {
-                "rasff_6m": latest_assessment.rasff_alerts_6m,
-                "rasff_12m": latest_assessment.rasff_alerts_12m
-            },
-            "risk_factors": risk_factors,
-            "compliance_alerts": compliance_alerts,
-            "technical_specs": technical_specs,
-            "data_source": data_source,
-            "last_updated": last_updated
-        }
-    else:
-        risk_analysis = {
-            "score": 75.0,
-            "status": "yellow",
-            "status_label": "Risco Moderado",
-            "components": {},
-            "recommendations": [],
-            "alerts": {"rasff_6m": 0, "rasff_12m": 0},
-            "risk_factors": [],
-            "compliance_alerts": [],
-            "technical_specs": [],
-            "data_source": "database",
-            "last_updated": None
-        }
-    
-    result = {
-        "product": {
-            "id": product.id,
-            "key": product.key,
-            "name_pt": product.name_pt,
-            "name_it": product.name_it,
-            "name_en": product.name_en,
-            "ncm_code": product.ncm_code,
-            "hs_code": product.hs_code,
-            "direction": product.direction.value,
-            "state": product.state.value,
-            "category": product.category,
-            "requires_phytosanitary_cert": product.requires_phytosanitary_cert,
-            "requires_health_cert": product.requires_health_cert,
-            "requires_origin_cert": product.requires_origin_cert
-        },
-        "risk_analysis": risk_analysis,
-        "dyad_raw_data": dyad_data
-    }
-    
-    logger.info(f"✅ Resposta montada - Fonte: {risk_analysis['data_source']}")
-    logger.info(f"{'='*80}\n")
-    
-    return result
-
-
-# ==================================================================================
-# ROTAS
-# ==================================================================================
+# ══════════════════════════════════════════════════════════════════════════════
+# API ENDPOINTS
+# ══════════════════════════════════════════════════════════════════════════════
 
 @app.get("/")
 def root():
+    """System status"""
     return {
-        "service": "ZOI Sentinel API",
-        "version": "3.0",
+        "service": "ZOI Sentinel",
+        "version": "4.0.0",
+        "architecture": "Zero Database - Living Intelligence",
         "status": "operational",
+        "ai_agent": "Manus AI" if ai_agent and ai_agent.use_manus else "Dyad AI",
+        "cache_strategy": "24 hours",
         "features": [
-            "🧠 AI Data Sovereignty (Dyad)",
-            "📡 Real-time Compliance Intelligence",
-            "🎯 Risk Assessment",
-            "📄 PDF Export",
-            "🔄 Auto-Migration Database"
-        ],
-        "dyad_configured": bool(os.environ.get('DYAD_API_KEY')),
-        "data_sovereignty": "Dyad AI is the primary source of truth"
+            "🧠 Real-Time AI Research",
+            "📡 Zero Static Compliance Tables",
+            "🎯 24-Hour Cache Only",
+            "📄 Business Class PDF Reports",
+            "⚡ Async/Await PDF Generation"
+        ]
     }
-
-
-@app.get("/api/products")
-def list_products(db: SessionLocal = Depends(get_db)):
-    products = db.query(Product).all()
-    return [
-        {
-            "id": p.id,
-            "key": p.key,
-            "name_pt": p.name_pt,
-            "name_it": p.name_it,
-            "ncm_code": p.ncm_code,
-            "direction": p.direction.value,
-            "state": p.state.value,
-            "last_sync": p.dyad_last_sync.isoformat() if hasattr(p, 'dyad_last_sync') and p.dyad_last_sync else None
-        }
-        for p in products
-    ]
-
 
 @app.get("/api/products/{product_key}")
-def get_product(product_key: str, refresh: bool = False, db: SessionLocal = Depends(get_db)):
+def get_product_intelligence(product_key: str, db: SessionLocal = Depends(get_db)):
     """
-    Retorna análise completa do produto com dados da Dyad AI.
+    Get product compliance intelligence
     
-    Query params:
-        refresh: Se True, força nova busca na Dyad AI
+    LOGIC:
+    1. Check cache (< 24h)
+    2. If valid: Return cached data
+    3. If invalid: Launch AI research → Wait → Save → Return
     """
-    return get_product_analysis(product_key, db, force_refresh=refresh)
-
-
-@app.get("/api/products/{product_key}/export-pdf")
-def export_risk_pdf(product_key: str, db: SessionLocal = Depends(get_db)):
-    """
-    📄 GERA PDF COM DADOS EM TEMPO REAL DA DYAD AI
     
-    IMPORTANTE: Esta função SEMPRE força uma nova busca na Dyad AI
-    para garantir que o PDF contenha os dados mais recentes possíveis.
-    """
-    logger.info(f"\n{'='*80}")
-    logger.info(f"📄 GERAÇÃO DE PDF COM DYAD AI - Produto: {product_key}")
-    logger.info(f"{'='*80}\n")
+    logger.info(f"\n{'━'*80}")
+    logger.info(f"🔍 PRODUCT INTELLIGENCE REQUEST: {product_key}")
+    logger.info(f"{'━'*80}")
     
-    # 1. Buscar produto no banco
+    # Find product
     product = db.query(Product).filter(Product.key == product_key).first()
+    
     if not product:
-        logger.error(f"❌ Produto {product_key} não encontrado")
         raise HTTPException(status_code=404, detail="Product not found")
     
-    logger.info(f"✅ Produto encontrado: {product.name_pt} (NCM: {product.ncm_code})")
+    # Check cache validity
+    cache_valid = CacheManager.is_cache_valid(product)
     
-    # 2. VALIDAR NCM
-    if not product.ncm_code or product.ncm_code.strip() == "":
-        logger.error(f"❌ ERRO CRÍTICO: NCM ausente para '{product.name_pt}'")
-        raise HTTPException(status_code=400, detail="Produto sem código NCM válido")
+    if cache_valid:
+        logger.info("✅ Returning cached data")
+        
+        return {
+            "product": {
+                "key": product.key,
+                "name_pt": product.name_pt,
+                "name_it": product.name_it,
+                "ncm_code": product.ncm_code,
+                "direction": product.direction
+            },
+            "intelligence": {
+                "status": product.ai_status,
+                "score": product.ai_score,
+                "risk_factors": product.ai_risk_factors or [],
+                "compliance_alerts": product.ai_compliance_alerts or [],
+                "technical_specs": product.ai_technical_specs or [],
+                "barriers": product.ai_barriers or {},
+                "documents_required": product.ai_documents_required or [],
+                "estimated_costs": product.ai_estimated_costs or {},
+                "data_source": "cache",
+                "last_updated": product.ai_last_check.isoformat() if product.ai_last_check else None,
+                "cache_age_hours": (
+                    (datetime.utcnow() - product.ai_last_check).total_seconds() / 3600
+                    if product.ai_last_check else None
+                )
+            }
+        }
     
-    # 3. 🧠 FORÇAR BUSCA NA DYAD AI (SEMPRE)
-    logger.info(f"🧠 FORÇANDO busca na Dyad AI para PDF em tempo real...")
+    # Cache expired or no data - Launch AI research
+    logger.info("🚀 Launching real-time AI research...")
     
-    dyad = DyadComplianceNavigator()
-    dyad_data = dyad.get_compliance_intelligence(
-        ncm_code=product.ncm_code,
+    if not ai_agent:
+        raise HTTPException(
+            status_code=503,
+            detail="AI Agent not configured"
+        )
+    
+    ai_data = ai_agent.run_deep_search(
         product_name=product.name_pt,
-        target_market="EU"
+        ncm_code=product.ncm_code,
+        direction=product.direction or "export",
+        origin_country="Brasil",
+        destination_country="Itália"
     )
     
-    # 4. Preparar dados para o PDF
-    product_data = {
-        "id": product.id,
-        "key": product.key,
-        "name_pt": product.name_pt,
-        "name_it": product.name_it,
-        "name_en": product.name_en,
-        "ncm_code": product.ncm_code,
-        "hs_code": product.hs_code,
-        "direction": product.direction.value,
-        "state": product.state.value,
-        "category": product.category,
-        "requires_phytosanitary_cert": product.requires_phytosanitary_cert,
-        "requires_health_cert": product.requires_health_cert,
-        "requires_origin_cert": product.requires_origin_cert
-    }
+    if not ai_data:
+        raise HTTPException(
+            status_code=500,
+            detail="AI research failed"
+        )
     
-    # 5. Se Dyad retornou dados, USAR APENAS ELES
-    if dyad_data:
-        logger.info(f"✅ Dyad AI retornou dados! Usando APENAS dados da IA para o PDF")
+    # Save to cache
+    CacheManager.save_ai_results(product, ai_data, db)
+    
+    logger.info("✅ Fresh AI intelligence returned")
+    
+    return {
+        "product": {
+            "key": product.key,
+            "name_pt": product.name_pt,
+            "name_it": product.name_it,
+            "ncm_code": product.ncm_code,
+            "direction": product.direction
+        },
+        "intelligence": {
+            "status": ai_data.get('status'),
+            "score": ai_data.get('score'),
+            "risk_factors": ai_data.get('risk_factors', []),
+            "compliance_alerts": ai_data.get('compliance_alerts', []),
+            "technical_specs": ai_data.get('technical_specs', []),
+            "barriers": ai_data.get('barriers', {}),
+            "documents_required": ai_data.get('documents_required', []),
+            "estimated_costs": ai_data.get('estimated_costs', {}),
+            "data_source": "live_ai",
+            "last_updated": datetime.utcnow().isoformat(),
+            "cache_age_hours": 0
+        }
+    }
+
+@app.get("/api/products/{product_key}/export-pdf")
+async def export_business_class_pdf(product_key: str, db: SessionLocal = Depends(get_db)):
+    """
+    Generate Business Class PDF Report
+    
+    CRITICAL: This endpoint ALWAYS waits for AI completion
+    to ensure the PDF contains real-time verified data.
+    """
+    
+    logger.info(f"\n{'━'*80}")
+    logger.info(f"📄 PDF GENERATION REQUEST: {product_key}")
+    logger.info(f"{'━'*80}")
+    
+    # Find product
+    product = db.query(Product).filter(Product.key == product_key).first()
+    
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    # Check cache validity
+    cache_valid = CacheManager.is_cache_valid(product)
+    
+    ai_data = None
+    verification_time = datetime.utcnow()
+    
+    if not cache_valid:
+        logger.info("⏳ Cache invalid - Launching AI research for PDF...")
         
-        # Calcular risk usando dados da Dyad
-        calc = EnhancedRiskCalculator()
-        risk_result = calc.calculate_from_dyad(dyad_data)
-        
-        # Salvar no banco (opcional, mas recomendado para histórico)
-        try:
-            rasff = dyad_data.get('rasff_alerts', {})
-            assessment = RiskAssessment(
-                product_id=product.id,
-                final_score=risk_result['score'],
-                status=RiskStatusDB(risk_result['status']),
-                rasff_score=risk_result['components']['Sanitário'],
-                lmr_score=risk_result['components']['Fitossanitário'],
-                phyto_score=risk_result['components']['Fitossanitário'],
-                logistic_score=risk_result['components']['Logístico'],
-                penalty=100 - risk_result['score'],
-                rasff_alerts_6m=rasff.get('last_6_months', 0),
-                rasff_alerts_12m=rasff.get('last_12_months', 0),
-                recommendations=risk_result['recommendations']
+        if not ai_agent:
+            raise HTTPException(
+                status_code=503,
+                detail="AI Agent not configured"
             )
-            if hasattr(assessment, 'data_source'):
-                assessment.data_source = 'dyad_ai_pdf'
-            if hasattr(assessment, 'dyad_metadata'):
-                assessment.dyad_metadata = dyad_data.get('_metadata', {})
-            
-            db.add(assessment)
-            db.commit()
-            logger.info(f"💾 Assessment da Dyad salvo no banco para histórico")
-        except Exception as e:
-            logger.warning(f"⚠️ Erro ao salvar assessment (PDF continuará): {e}")
-            db.rollback()
         
-        risk_data = risk_result
-        risk_data['data_source'] = 'dyad_ai'
+        # CRITICAL: Wait for AI completion
+        ai_data = ai_agent.run_deep_search(
+            product_name=product.name_pt,
+            ncm_code=product.ncm_code,
+            direction=product.direction or "export",
+            origin_country="Brasil",
+            destination_country="Itália"
+        )
         
-        logger.info(f"📊 Dados do PDF:")
-        logger.info(f"   - Score: {risk_data['score']:.1f}")
-        logger.info(f"   - Status: {risk_data['status']} ({risk_data['status_label']})")
-        logger.info(f"   - Risk Factors: {len(risk_data.get('risk_factors', []))}")
-        logger.info(f"   - Compliance Alerts: {len(risk_data.get('compliance_alerts', []))}")
-        logger.info(f"   - Technical Specs: {len(risk_data.get('technical_specs', []))}")
+        if not ai_data:
+            raise HTTPException(
+                status_code=500,
+                detail="AI research failed - cannot generate PDF"
+            )
+        
+        # Save fresh data
+        CacheManager.save_ai_results(product, ai_data, db)
+        
+        logger.info("✅ Fresh AI data acquired for PDF")
     
     else:
-        # Fallback: se Dyad falhar, usar dados do banco MAS AVISAR
-        logger.warning(f"⚠️ Dyad AI não retornou dados. Usando fallback do banco.")
+        logger.info("✅ Using valid cached data for PDF")
         
-        latest_assessment = db.query(RiskAssessment).filter(
-            RiskAssessment.product_id == product.id
-        ).order_by(RiskAssessment.calculation_timestamp.desc()).first()
+        # Use cached data
+        ai_data = {
+            'status': product.ai_status,
+            'score': product.ai_score,
+            'risk_factors': product.ai_risk_factors or [],
+            'compliance_alerts': product.ai_compliance_alerts or [],
+            'technical_specs': product.ai_technical_specs or [],
+            'barriers': product.ai_barriers or {},
+            'documents_required': product.ai_documents_required or [],
+            'estimated_costs': product.ai_estimated_costs or {}
+        }
         
-        if latest_assessment:
-            risk_factors = []
-            compliance_alerts = []
-            technical_specs = []
-            
-            if hasattr(product, 'risk_factors') and product.risk_factors:
-                risk_factors = product.risk_factors
-            if hasattr(product, 'compliance_alerts') and product.compliance_alerts:
-                compliance_alerts = product.compliance_alerts
-            if hasattr(product, 'technical_specs') and product.technical_specs:
-                technical_specs = product.technical_specs
-            
-            risk_data = {
-                "score": float(latest_assessment.final_score),
-                "status": latest_assessment.status.value,
-                "status_label": {
-                    'green': 'Baixo Risco',
-                    'yellow': 'Risco Moderado',
-                    'red': 'Alto Risco'
-                }.get(latest_assessment.status.value, 'Risco Moderado'),
-                "components": {
-                    "Sanitário": float(latest_assessment.rasff_score or 0),
-                    "Fitossanitário": float(latest_assessment.lmr_score or 0),
-                    "Logístico": float(latest_assessment.logistic_score or 0),
-                    "Documental": float(latest_assessment.penalty or 0)
-                },
-                "recommendations": latest_assessment.recommendations or [],
-                "alerts": {
-                    "rasff_6m": latest_assessment.rasff_alerts_6m,
-                    "rasff_12m": latest_assessment.rasff_alerts_12m
-                },
-                "risk_factors": risk_factors,
-                "compliance_alerts": compliance_alerts,
-                "technical_specs": technical_specs,
-                "data_source": "database_fallback"
-            }
-        else:
-            # Fallback final: calcular manualmente
-            logger.warning(f"⚠️ Nenhum assessment no banco. Calculando manualmente.")
-            calc_trad = TraditionalRiskCalculator()
-            risk_data = calc_trad.calculate(product, 0, 0)
-            risk_data['risk_factors'] = []
-            risk_data['compliance_alerts'] = []
-            risk_data['technical_specs'] = []
-            risk_data['data_source'] = "calculated_fallback"
+        verification_time = product.ai_last_check or datetime.utcnow()
     
-    # 6. Gerar PDF
-    logger.info(f"📄 Gerando PDF com dados de: {risk_data['data_source']}")
+    # Generate Business Class PDF
+    logger.info("📄 Generating Business Class PDF...")
     
-    generator = ZOISentinelReportGenerator()
-    pdf_buffer = generator.generate_risk_pdf(product_data, risk_data, dyad_data)
+    pdf_gen = BusinessClassPDFGenerator()
     
-    logger.info(f"✅ PDF gerado com sucesso!")
-    logger.info(f"{'='*80}\n")
+    product_data = {
+        'name_pt': product.name_pt,
+        'name_it': product.name_it,
+        'ncm_code': product.ncm_code,
+        'direction': product.direction
+    }
+    
+    pdf_buffer = pdf_gen.generate_dossier(
+        product_data=product_data,
+        ai_data=ai_data,
+        verification_time=verification_time
+    )
+    
+    logger.info("✅ Business Class PDF generated successfully")
+    logger.info(f"{'━'*80}\n")
     
     return StreamingResponse(
         pdf_buffer,
         media_type="application/pdf",
         headers={
-            "Content-Disposition": f"attachment; filename=zoi_sentinel_{product_key}.pdf"
+            "Content-Disposition": f"attachment; filename=zoi_dossier_{product_key}.pdf"
         }
     )
 
-
-@app.post("/api/admin/products")
-def create_product(product_data: dict, background_tasks: BackgroundTasks, db: SessionLocal = Depends(get_db)):
-    """Cria novo produto"""
-    logger.info(f"\n📝 Criando novo produto: {product_data.get('name_pt', 'N/A')}")
-    
-    ncm = product_data.get("ncm_code", "").strip()
-    if not ncm:
-        logger.error(f"❌ ERRO CRÍTICO: Tentativa de criar produto sem NCM!")
-        raise HTTPException(status_code=400, detail="NCM code is required")
-    
-    try:
-        new_p = Product(
-            key=product_data["key"],
-            name_pt=product_data["name_pt"],
-            name_it=product_data.get("name_it", product_data["name_pt"]),
-            ncm_code=ncm,
-            hs_code=ncm[:6],
-            direction=TradeDirectionDB(product_data["direction"]),
-            state=ProductStateDB(product_data["state"]),
-            requires_phytosanitary_cert=product_data.get("requires_phytosanitary_cert", True)
-        )
-        db.add(new_p)
-        db.commit()
-        db.refresh(new_p)
-        
-        logger.info(f"✅ Produto '{new_p.name_pt}' criado com ID {new_p.id}")
-        logger.info(f"🧠 Iniciando busca Dyad em segundo plano...")
-        
-        background_tasks.add_task(get_product_analysis, new_p.key, db, True)
-        
-        return {
-            "status": "success",
-            "message": f"Produto '{new_p.name_pt}' criado. Análise Dyad AI iniciada.",
-            "product_key": new_p.key
-        }
-        
-    except Exception as e:
-        db.rollback()
-        logger.error(f"❌ Erro ao criar produto: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.delete("/api/admin/products/{product_key}")
-def delete_product(product_key: str, db: SessionLocal = Depends(get_db)):
-    product = db.query(Product).filter(Product.key == product_key).first()
-    if product:
-        db.delete(product)
-        db.commit()
-        logger.info(f"✅ Produto {product_key} removido")
-        return {"status": "success", "message": f"Produto {product_key} removido"}
-    
-    logger.warning(f"⚠️ Produto {product_key} não encontrado")
-    raise HTTPException(status_code=404, detail="Produto não encontrado")
-
-
 @app.post("/api/products/{product_key}/refresh")
-def force_refresh(product_key: str, db: SessionLocal = Depends(get_db)):
-    """Força atualização via Dyad AI"""
-    logger.info(f"🔄 Forçando refresh para produto: {product_key}")
-    return get_product_analysis(product_key, db, force_refresh=True)
-
-
-
-
-@app.post("/api/risk/calculate")
-def calculate_risk(request: RiskCalculationRequest, db: SessionLocal = Depends(get_db)):
+def force_ai_refresh(product_key: str, db: SessionLocal = Depends(get_db)):
     """
-    Calcula risco usando método tradicional (sem Dyad AI).
-    Compatível com o frontend Lovable.
+    Force AI research refresh (ignore cache)
     """
-    logger.info(f"🧮 Calculando risco (tradicional) para produto: {request.product_key}")
     
-    product = db.query(Product).filter(Product.key == request.product_key).first()
+    logger.info(f"🔄 Force refresh requested for {product_key}")
+    
+    product = db.query(Product).filter(Product.key == product_key).first()
+    
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     
-    rasff_alerts_6m = request.rasff_alerts_6m
-    rasff_alerts_12m = request.rasff_alerts_12m
+    if not ai_agent:
+        raise HTTPException(status_code=503, detail="AI Agent not configured")
     
-    if rasff_alerts_6m == 0 and rasff_alerts_12m == 0:
-        logger.info("📊 Nenhum alerta fornecido, usando perfil histórico do NCM")
-        profile = NCM_RISK_PROFILES.get(product.ncm_code)
-        if profile:
-            rasff_alerts_12m = profile.get('historical_rejections', 0)
-            rasff_alerts_6m = min(rasff_alerts_12m // 2, rasff_alerts_12m)
-            logger.info(f"📈 Alertas estimados: 6m={rasff_alerts_6m}, 12m={rasff_alerts_12m}")
-    
-    calc = TraditionalRiskCalculator()
-    result = calc.calculate(product, rasff_alerts_6m, rasff_alerts_12m)
-    
-    try:
-        assessment = RiskAssessment(
-            product_id=product.id,
-            final_score=result['score'],
-            status=RiskStatusDB(result['status']),
-            rasff_score=result['components']['Sanitário'],
-            lmr_score=result['components']['Fitossanitário'],
-            phyto_score=result['components']['Fitossanitário'],
-            logistic_score=result['components']['Logístico'],
-            penalty=100 - result['score'],
-            rasff_alerts_6m=rasff_alerts_6m,
-            rasff_alerts_12m=rasff_alerts_12m,
-            recommendations=result['recommendations']
-        )
-        if hasattr(assessment, 'data_source'):
-            assessment.data_source = 'manual'
-        db.add(assessment)
-        db.commit()
-        logger.info(f"✅ Avaliação de risco salva no banco de dados")
-    except Exception as e:
-        logger.warning(f"⚠️ Erro ao salvar avaliação: {e}")
-    
-    return {
-        "score": float(result["score"]),
-        "status": str(result["status"]),
-        "status_label": str(result["status_label"]),
-        "components": {
-            "Sanitário": float(result["components"]["Sanitário"]),
-            "Fitossanitário": float(result["components"]["Fitossanitário"]),
-            "Logístico": float(result["components"]["Logístico"]),
-            "Documental": float(result["components"]["Documental"])
-        },
-        "recommendations": [str(r) for r in result["recommendations"]],
-        "alerts": {
-            "rasff_6m": int(result["alerts"]["rasff_6m"]),
-            "rasff_12m": int(result["alerts"]["rasff_12m"]),
-            "historical_rejections": int(result["alerts"]["historical_rejections"])
-        },
-        "product_info": {
-            "name": str(product.name_pt),
-            "ncm": str(product.ncm_code),
-            "direction": str(product.direction.value)
-        }
-    }
-
-@app.post("/api/users", status_code=status.HTTP_201_CREATED)
-def create_user(user: UserCreate, db: SessionLocal = Depends(get_db)):
-    existing_user = db.query(User).filter(User.email == user.email).first()
-    if existing_user:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    
-    db_user = User(
-        email=user.email,
-        hashed_password=get_password_hash(user.password),
-        full_name=user.full_name,
-        company=user.company
+    ai_data = ai_agent.run_deep_search(
+        product_name=product.name_pt,
+        ncm_code=product.ncm_code,
+        direction=product.direction or "export"
     )
     
-    db.add(db_user)
-    db.commit()
-    db.refresh(db_user)
+    if not ai_data:
+        raise HTTPException(status_code=500, detail="AI research failed")
     
-    return {"message": "User created successfully", "email": db_user.email}
-
-
-@app.post("/token", response_model=Token)
-def login(form_data: OAuth2PasswordRequestForm = Depends(), db: SessionLocal = Depends(get_db)):
-    user = db.query(User).filter(User.email == form_data.username).first()
-    
-    if not user or not verify_password(form_data.password, user.hashed_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user.email}, expires_delta=access_token_expires
-    )
-    
-    return {"access_token": access_token, "token_type": "bearer"}
-
-
-@app.get("/api/admin/stats")
-def get_admin_stats(db: SessionLocal = Depends(get_db)):
-    total_products = db.query(Product).count()
-    total_assessments = db.query(RiskAssessment).count()
-    total_users = db.query(User).count()
-    
-    recent_sync = datetime.utcnow() - timedelta(hours=24)
-    
-    synced_products = 0
-    try:
-        synced_products = db.query(Product).filter(Product.dyad_last_sync >= recent_sync).count()
-    except:
-        pass
-    
-    green_count = db.query(RiskAssessment).filter(RiskAssessment.status == RiskStatusDB.GREEN).count()
-    yellow_count = db.query(RiskAssessment).filter(RiskAssessment.status == RiskStatusDB.YELLOW).count()
-    red_count = db.query(RiskAssessment).filter(RiskAssessment.status == RiskStatusDB.RED).count()
+    CacheManager.save_ai_results(product, ai_data, db)
     
     return {
-        "total_products": total_products,
-        "total_assessments": total_assessments,
-        "total_users": total_users,
-        "synced_products_24h": synced_products,
-        "status_distribution": {
-            "green": green_count,
-            "yellow": yellow_count,
-            "red": red_count
-        },
-        "dyad_configured": bool(os.environ.get('DYAD_API_KEY'))
+        "message": "AI research completed successfully",
+        "product_key": product_key,
+        "timestamp": datetime.utcnow().isoformat()
     }
 
+@app.get("/api/products")
+def list_products(db: SessionLocal = Depends(get_db)):
+    """List all products"""
+    products = db.query(Product).all()
+    
+    return {
+        "products": [
+            {
+                "key": p.key,
+                "name_pt": p.name_pt,
+                "ncm_code": p.ncm_code,
+                "direction": p.direction,
+                "cache_valid": CacheManager.is_cache_valid(p),
+                "last_check": p.ai_last_check.isoformat() if p.ai_last_check else None
+            }
+            for p in products
+        ]
+    }
 
-# ==================================================================================
-# INICIALIZAÇÃO
-# ==================================================================================
+# ══════════════════════════════════════════════════════════════════════════════
+# MAIN
+# ══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     import uvicorn
     
-    # Criar tabelas
-    Base.metadata.create_all(bind=engine)
-    
-    # 🔧 EXECUTAR MIGRAÇÃO AUTOMÁTICA
-    migrate_database()
-    
     port = int(os.environ.get("PORT", 8000))
     
-    logger.info(f"\n{'='*80}")
-    logger.info(f"🛡️ ZOI SENTINEL API v3.0 - INICIANDO")
-    logger.info(f"{'='*80}")
-    logger.info(f"🔌 Porta: {port}")
-    logger.info(f"🧠 Dyad AI: {'✅ Configurado' if os.environ.get('DYAD_API_KEY') else '❌ Não configurado'}")
-    logger.info(f"💾 Database: {DATABASE_URL.split('@')[1] if '@' in DATABASE_URL else 'Local'}")
-    logger.info(f"📡 Data Sovereignty: ATIVADA")
-    logger.info(f"🔧 Auto-Migration: ATIVADA")
-    logger.info(f"{'='*80}\n")
+    logger.info(f"\n{'━'*80}")
+    logger.info(f"🚀 ZOI SENTINEL v4.0 - LIVING INTELLIGENCE SYSTEM")
+    logger.info(f"{'━'*80}")
+    logger.info(f"🔌 Port: {port}")
+    logger.info(f"🧠 AI Agent: {'Manus AI' if ai_agent and ai_agent.use_manus else 'Dyad AI'}")
+    logger.info(f"💾 Cache Strategy: 24 hours")
+    logger.info(f"📄 PDF Design: Business Class")
+    logger.info(f"{'━'*80}\n")
     
     uvicorn.run(app, host="0.0.0.0", port=port)
