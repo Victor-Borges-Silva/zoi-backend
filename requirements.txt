@@ -1,28 +1,9 @@
-# ZOI Sentinel v4.0 - Requirements for Render
-# Optimized to avoid compilation errors
-
-# Core Web Framework
 fastapi==0.104.1
-uvicorn[standard]==0.24.0
-
-# Database (PostgreSQL)
+uvicorn==0.24.0
 sqlalchemy==2.0.23
 psycopg2-binary==2.9.9
-
-# PDF Generation
 reportlab==4.0.7
-
-# HTTP Requests (AI Agent)
 requests==2.31.0
-
-# Data Validation
 pydantic==2.5.0
-
-# Environment Variables
 python-dotenv==1.0.0
-
-# File Upload Support
 python-multipart==0.0.6
-
-# Date Utilities
-python-dateutil==2.8.2
