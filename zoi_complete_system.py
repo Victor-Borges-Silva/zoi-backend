@@ -72,32 +72,29 @@ Base = declarative_base()
 # ══════════════════════════════════════════════════════════════════════════════
 
 class Product(Base):
-    """Product Master Data (Basic Info Only)"""
-    __tablename__ = "products"
+    """Tabela de produtos - Atualizada para v4.1"""
+    __tablename__ = 'products_v4_1'  # <--- MUDAMOS O NOME AQUI PARA CRIAR DO ZERO
     
     id = Column(Integer, primary_key=True, index=True)
-    key = Column(String, unique=True, index=True, nullable=False)
-    name_pt = Column(String, nullable=False)
-    name_it = Column(String)
-    ncm_code = Column(String, nullable=False, index=True)
-    direction = Column(String)  # "export" or "import"
+    key = Column(String, unique=True, index=True)
+    name_pt = Column(String)
+    ncm_code = Column(String)
+    direction = Column(String, default="export")
     
-    # AI Cache (Living Intelligence Data)
-    ai_last_check = Column(DateTime, nullable=True)  # Last AI search timestamp
-    ai_raw_response = Column(JSON, nullable=True)  # Full AI response
-    ai_status = Column(String, nullable=True)  # "green", "yellow", "red"
-    ai_score = Column(Float, nullable=True)
-    ai_risk_factors = Column(JSON, nullable=True)
-    ai_compliance_alerts = Column(JSON, nullable=True)
-    ai_technical_specs = Column(JSON, nullable=True)
-    ai_barriers = Column(JSON, nullable=True)
-    ai_documents_required = Column(JSON, nullable=True)
-    ai_estimated_costs = Column(JSON, nullable=True)
+    # NOVAS COLUNAS QUE ESTAVAM FALTANDO
+    ai_last_check = Column(DateTime)
+    ai_raw_response = Column(JSON)
+    ai_status = Column(String) 
+    ai_score = Column(Float)
+    ai_risk_factors = Column(JSON)
+    ai_compliance_alerts = Column(JSON)
+    ai_technical_specs = Column(JSON)
+    ai_barriers = Column(JSON)
+    ai_documents_required = Column(JSON)
+    ai_estimated_costs = Column(JSON)
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-Base.metadata.create_all(bind=engine)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MANUS AI / DYAD AGENT INTEGRATION
@@ -1222,4 +1219,21 @@ if __name__ == "__main__":
     logger.info(f"📄 PDF Design: Business Class")
     logger.info(f"{'━'*80}\n")
     
+    uvicorn.run(app, host="0.0.0.0", port=port)
+   
+def run_api_server():
+    """Inicia servidor FastAPI e sincroniza o Banco de Dados"""
+    import uvicorn
+    import os
+    
+    # ESTE COMANDO CRIA A NOVA TABELA 'products_v4_1' AUTOMATICAMENTE
+    try:
+        logger.info("🛠️ Sincronizando tabelas com o banco de dados...")
+        Base.metadata.create_all(bind=engine)
+        logger.info("✅ Banco de dados v4.1 pronto para uso.")
+    except Exception as e:
+        logger.error(f"❌ Falha ao inicializar banco: {e}")
+
+    # Porta dinâmica para o Render
+    port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
